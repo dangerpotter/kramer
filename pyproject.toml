@@ -1,16 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "kramer"
 version = "0.1.0"
-description = "A pragmatic implementation of autonomous discovery cycles"
+description = "A pragmatic implementation of autonomous discovery cycles with AI-powered data analysis"
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "networkx>=3.2",
-    "anthropic>=0.18.0",
+    "anthropic>=0.39.0",
     "jinja2>=3.1.0",
     "aiosqlite>=0.19.0",
-    "pytest>=7.4.0",
-    "pytest-asyncio>=0.21.0",
     "python-dotenv>=1.0.0",
+    "jupyter>=1.0.0",
+    "nbformat>=5.9.0",
+    "nbconvert>=7.0.0",
+    "pandas>=2.0.0",
+    "matplotlib>=3.7.0",
+    "seaborn>=0.12.0",
+    "numpy>=1.24.0",
+    "scipy>=1.10.0",
 ]
 
 [project.optional-dependencies]
@@ -22,9 +33,8 @@ dev = [
     "ruff>=0.1.0",
 ]
 
-[build-system]
-requires = ["setuptools>=68.0"]
-build-backend = "setuptools.build_backend"
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -38,3 +48,6 @@ target-version = ['py311']
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+
+[project.scripts]
+kramer = "kramer.cli:main"
