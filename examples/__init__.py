@@ -1,1 +1,1 @@
-"""Example scripts for using Kramer."""
+"""Example scripts demonstrating Kramer functionality."""

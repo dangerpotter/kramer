@@ -1,1 +1,1 @@
-"""Tests for the Kramer data analysis agent."""
+"""Tests for the Kramer system."""
