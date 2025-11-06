@@ -39,8 +39,11 @@ wheels/
 
 # Outputs
 outputs/
-data/
+
+# Data (allow sample data)
+data/*
 !data/.gitkeep
+!data/sample_data.csv
 
 # Testing
 .pytest_cache/
