@@ -8,11 +8,11 @@ returns structured results.
 
 import os
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from src.kramer.data_analysis_agent import AgentConfig, DataAnalysisAgent
+from src.kramer.hypothesis_agent import HypothesisAgent
 from src.orchestrator.cycle_manager import Task
 from src.world_model.graph import WorldModel
 
@@ -217,21 +217,25 @@ class AgentCoordinator:
             # Format findings
             findings = []
             for paper in result.get("papers", []):
-                findings.append({
-                    "type": "paper",
-                    "title": paper.get("title"),
-                    "authors": paper.get("authors"),
-                    "year": paper.get("year"),
-                    "relevance_score": paper.get("relevance_score", 0.0),
-                    "abstract": paper.get("abstract"),
-                })
+                findings.append(
+                    {
+                        "type": "paper",
+                        "title": paper.get("title"),
+                        "authors": paper.get("authors"),
+                        "year": paper.get("year"),
+                        "relevance_score": paper.get("relevance_score", 0.0),
+                        "abstract": paper.get("abstract"),
+                    }
+                )
 
             # Add text findings
             for finding_text in result.get("findings", []):
-                findings.append({
-                    "type": "insight",
-                    "text": finding_text,
-                })
+                findings.append(
+                    {
+                        "type": "insight",
+                        "text": finding_text,
+                    }
+                )
 
             return TaskResult(
                 success=True,
@@ -264,8 +268,6 @@ class AgentCoordinator:
         """
         Execute hypothesis generation task.
 
-        This is a stub for future HypothesisAgent implementation.
-
         Args:
             task: Task object with context
             world_model: World model with current findings
@@ -273,23 +275,61 @@ class AgentCoordinator:
         Returns:
             TaskResult with generated hypotheses
         """
-        # TODO: Implement actual HypothesisAgent
-        # For now, return a stub result
-        return TaskResult(
-            success=True,
-            task_id=task.task_id,
-            task_type=task.task_type.value,
-            findings=[{
-                "type": "hypothesis",
-                "text": f"Hypothesis generation stub for: {task.objective}",
-                "confidence": 0.5,
-            }],
-            cost=0.0,
-            metadata={
-                "status": "stub_implementation",
-                "note": "HypothesisAgent not yet implemented",
-            },
-        )
+        try:
+            # Extract parameters from task context
+            current_cycle = task.context.get("current_cycle")
+            max_hypotheses = task.context.get("max_hypotheses", 5)
+            min_finding_confidence = task.context.get("min_finding_confidence", 0.6)
+
+            # Create hypothesis agent
+            agent = HypothesisAgent(
+                world_model=world_model,
+                api_key=self.api_key,
+                max_hypotheses=max_hypotheses,
+            )
+
+            # Generate hypotheses
+            result = agent.generate_hypotheses(
+                current_cycle=current_cycle,
+                min_finding_confidence=min_finding_confidence,
+            )
+
+            # Format findings
+            findings = []
+            for hyp_id, hyp_data in zip(result.hypothesis_ids, result.raw_hypotheses):
+                findings.append(
+                    {
+                        "type": "hypothesis",
+                        "id": hyp_id,
+                        "text": hyp_data.get("statement", ""),
+                        "rationale": hyp_data.get("rationale", ""),
+                        "testability": hyp_data.get("testability", ""),
+                        "confidence": hyp_data.get("novelty_score", 0.0),
+                    }
+                )
+
+            return TaskResult(
+                success=True,
+                task_id=task.task_id,
+                task_type=task.task_type.value,
+                findings=findings,
+                cost=result.cost,
+                metadata={
+                    "hypotheses_generated": result.hypotheses_generated,
+                    "hypothesis_ids": result.hypothesis_ids,
+                },
+            )
+
+        except Exception as e:
+            return TaskResult(
+                success=False,
+                task_id=task.task_id,
+                task_type=task.task_type.value,
+                findings=[],
+                cost=0.0,
+                metadata={},
+                error=str(e),
+            )
 
     def execute_hypothesis_test(
         self,
@@ -316,12 +356,14 @@ class AgentCoordinator:
             success=True,
             task_id=task.task_id,
             task_type=task.task_type.value,
-            findings=[{
-                "type": "test_result",
-                "hypothesis": hypothesis,
-                "result": "not_tested",
-                "note": "HypothesisTesterAgent not yet implemented",
-            }],
+            findings=[
+                {
+                    "type": "test_result",
+                    "hypothesis": hypothesis,
+                    "result": "not_tested",
+                    "note": "HypothesisTesterAgent not yet implemented",
+                }
+            ],
             cost=0.0,
             metadata={
                 "status": "stub_implementation",
@@ -352,20 +394,24 @@ class AgentCoordinator:
         # Get recent hypotheses
         for node_id, data in world_model.graph.nodes(data=True):
             if data.get("node_type") == "hypothesis":
-                context["hypotheses"].append({
-                    "id": node_id,
-                    "text": data.get("text", ""),
-                    "confidence": data.get("confidence", 0.0),
-                })
+                context["hypotheses"].append(
+                    {
+                        "id": node_id,
+                        "text": data.get("text", ""),
+                        "confidence": data.get("confidence", 0.0),
+                    }
+                )
 
         # Get recent findings
         for node_id, data in world_model.graph.nodes(data=True):
             if data.get("node_type") == "finding":
-                context["recent_findings"].append({
-                    "id": node_id,
-                    "text": data.get("text", ""),
-                    "confidence": data.get("confidence", 0.0),
-                })
+                context["recent_findings"].append(
+                    {
+                        "id": node_id,
+                        "text": data.get("text", ""),
+                        "confidence": data.get("confidence", 0.0),
+                    }
+                )
 
         # Limit to most recent/relevant
         context["hypotheses"] = context["hypotheses"][:10]
