@@ -1739,6 +1739,352 @@ Respond with JSON in this exact format:
 
         print("="*60 + "\n")
 
+    def _identify_knowledge_gaps(self) -> Dict[str, Any]:
+        """
+        Analyze world model for knowledge gaps.
+
+        Returns:
+            Dictionary containing:
+                - unexplored_data: List of datasets or areas with minimal analysis
+                - weak_evidence: List of claims with low validation strength
+                - novel_findings_count: Count of novel findings that need follow-up
+        """
+        unexplored_data = []
+        weak_evidence = []
+        novel_findings = []
+
+        # Track which datasets have been analyzed
+        analyzed_datasets = set()
+        all_datasets = set()
+
+        # Identify hypotheses with weak evidence
+        for node_id, data in self.world_model.graph.nodes(data=True):
+            node_type = data.get("node_type")
+
+            if node_type == NodeType.HYPOTHESIS.value:
+                # Count supporting and refuting evidence
+                support_count = 0
+                refute_count = 0
+
+                for _, _, edge_data in self.world_model.graph.in_edges(node_id, data=True):
+                    edge_type = edge_data.get("edge_type")
+                    if edge_type == "supports":
+                        support_count += 1
+                    elif edge_type == "refutes":
+                        refute_count += 1
+
+                total_evidence = support_count + refute_count
+                confidence = data.get("confidence", 0.0)
+
+                # Consider it weak evidence if:
+                # - Has few supporting pieces of evidence (< 2)
+                # - Low confidence (< 0.6)
+                # - Not refuted (still active)
+                if total_evidence < 2 and confidence < 0.6 and refute_count == 0:
+                    validation_strength = total_evidence / 3.0  # Normalize to 0-1
+                    weak_evidence.append({
+                        "hypothesis_id": node_id,
+                        "text": data.get("text", ""),
+                        "confidence": confidence,
+                        "validation_strength": validation_strength,
+                        "evidence_count": total_evidence,
+                        "novelty": data.get("metadata", {}).get("novelty", 0.5),
+                        "objective_alignment": self._compute_objective_alignment(data.get("text", "")),
+                    })
+
+            elif node_type == NodeType.FINDING.value:
+                # Track novel findings
+                novelty = data.get("metadata", {}).get("novelty", 0.5)
+                confidence = data.get("confidence", 0.0)
+
+                if novelty > 0.7 and confidence > 0.6:
+                    novel_findings.append({
+                        "finding_id": node_id,
+                        "text": data.get("text", ""),
+                        "novelty": novelty,
+                        "confidence": confidence,
+                        "objective_alignment": self._compute_objective_alignment(data.get("text", "")),
+                    })
+
+            elif node_type == NodeType.DATASET.value:
+                # Track all datasets
+                all_datasets.add(node_id)
+
+                # Check if dataset has been analyzed (has outgoing edges to findings)
+                has_findings = False
+                for _, target, edge_data in self.world_model.graph.out_edges(node_id, data=True):
+                    target_data = self.world_model.graph.nodes[target]
+                    if target_data.get("node_type") == NodeType.FINDING.value:
+                        has_findings = True
+                        analyzed_datasets.add(node_id)
+                        break
+
+                if not has_findings:
+                    # Unexplored dataset
+                    unexplored_data.append({
+                        "dataset_id": node_id,
+                        "text": data.get("text", ""),
+                        "novelty": 0.8,  # High novelty for unexplored data
+                        "validation_strength": 0.0,  # No validation yet
+                        "objective_alignment": self._compute_objective_alignment(data.get("text", "")),
+                    })
+
+        # Identify areas with no recent exploration (based on papers without follow-up)
+        for node_id, data in self.world_model.graph.nodes(data=True):
+            if data.get("node_type") == NodeType.PAPER.value:
+                # Check if paper has been used to generate hypotheses or findings
+                has_follow_up = False
+                for _, target, _ in self.world_model.graph.out_edges(node_id, data=True):
+                    target_data = self.world_model.graph.nodes[target]
+                    target_type = target_data.get("node_type")
+                    if target_type in [NodeType.HYPOTHESIS.value, NodeType.FINDING.value]:
+                        has_follow_up = True
+                        break
+
+                if not has_follow_up:
+                    # Paper without follow-up represents unexplored research area
+                    unexplored_data.append({
+                        "paper_id": node_id,
+                        "text": data.get("text", "")[:200],  # Truncate for readability
+                        "novelty": 0.7,
+                        "validation_strength": 0.0,
+                        "objective_alignment": self._compute_objective_alignment(data.get("text", "")),
+                    })
+
+        return {
+            "unexplored_data": unexplored_data,
+            "weak_evidence": weak_evidence,
+            "novel_findings_count": len(novel_findings),
+            "novel_findings": novel_findings,
+        }
+
+    def _compute_objective_alignment(self, text: str) -> float:
+        """
+        Compute how well a piece of text aligns with the current research objective.
+
+        Uses simple keyword matching for now. Could be enhanced with embeddings.
+
+        Args:
+            text: Text to evaluate
+
+        Returns:
+            Alignment score (0.0 to 1.0)
+        """
+        if not self.cycles:
+            return 0.5  # Default if no objective
+
+        # Get objective from most recent cycle
+        recent_cycles = sorted(
+            self.cycles.values(),
+            key=lambda c: c.created_at,
+            reverse=True
+        )
+        objective = recent_cycles[0].objective if recent_cycles else ""
+
+        if not objective:
+            return 0.5
+
+        # Simple keyword-based alignment
+        # Extract important words from objective (> 4 chars, lowercase)
+        objective_words = set(
+            word.lower()
+            for word in objective.split()
+            if len(word) > 4 and word.isalnum()
+        )
+
+        text_words = set(
+            word.lower()
+            for word in text.split()
+            if len(word) > 4 and word.isalnum()
+        )
+
+        if not objective_words:
+            return 0.5
+
+        # Calculate Jaccard similarity
+        intersection = len(objective_words & text_words)
+        union = len(objective_words | text_words)
+
+        if union == 0:
+            return 0.0
+
+        alignment = intersection / len(objective_words)  # Normalize by objective words
+        return min(1.0, alignment)  # Cap at 1.0
+
+    def _score_task_priority(self, gap: Dict[str, Any], type: str) -> float:
+        """
+        Score task priority based on world model state.
+
+        Args:
+            gap: Gap information dictionary
+            type: Task type ("data_analysis", "literature", "hypothesis_gen")
+
+        Returns:
+            Priority score (0.0 to 1.0+)
+        """
+        score = 0.0
+
+        # Novelty seeking: higher score for unexplored areas
+        score += gap.get("novelty", 0.5) * 0.4
+
+        # Validation: higher score for unvalidated claims
+        score += (1.0 - gap.get("validation_strength", 0.5)) * 0.3
+
+        # Relevance: higher score for objective-aligned tasks
+        score += gap.get("objective_alignment", 0.5) * 0.3
+
+        return score
+
+    def _create_analysis_task(self, gap: Dict[str, Any], cycle_id: str) -> Task:
+        """
+        Create a data analysis task for an unexplored gap.
+
+        Args:
+            gap: Gap information from _identify_knowledge_gaps
+            cycle_id: Cycle ID to attach task to
+
+        Returns:
+            New Task object
+        """
+        if "dataset_id" in gap:
+            objective = f"Analyze unexplored dataset: {gap['text']}"
+            context = {
+                "dataset_id": gap["dataset_id"],
+                "requires_dataset": True,
+            }
+        elif "finding_id" in gap:
+            objective = f"Follow up on novel finding: {gap['text'][:100]}"
+            context = {
+                "finding_id": gap["finding_id"],
+                "focus": "implications",
+            }
+        else:
+            objective = f"Analyze data for: {gap['text'][:100]}"
+            context = {"requires_dataset": True}
+
+        return Task(
+            task_id=str(uuid4()),
+            task_type=TaskType.ANALYZE_DATA,
+            status=TaskStatus.PENDING,
+            objective=objective,
+            context=context,
+        )
+
+    def _create_literature_task(self, gap: Dict[str, Any], cycle_id: str) -> Task:
+        """
+        Create a literature search task for weak evidence.
+
+        Args:
+            gap: Gap information from _identify_knowledge_gaps
+            cycle_id: Cycle ID to attach task to
+
+        Returns:
+            New Task object
+        """
+        if "hypothesis_id" in gap:
+            objective = f"Search literature to validate: {gap['text'][:100]}"
+            context = {
+                "hypothesis_id": gap["hypothesis_id"],
+                "max_papers": 10,
+                "focus": "validation",
+            }
+        else:
+            objective = f"Search literature for: {gap['text'][:100]}"
+            context = {"max_papers": 10}
+
+        return Task(
+            task_id=str(uuid4()),
+            task_type=TaskType.SEARCH_LITERATURE,
+            status=TaskStatus.PENDING,
+            objective=objective,
+            context=context,
+        )
+
+    def _create_hypothesis_task(self, cycle_id: str, novel_findings: List[Dict[str, Any]]) -> Task:
+        """
+        Create a hypothesis generation task.
+
+        Args:
+            cycle_id: Cycle ID to attach task to
+            novel_findings: List of novel findings to base hypotheses on
+
+        Returns:
+            New Task object
+        """
+        if novel_findings:
+            finding_texts = [f["text"][:50] for f in novel_findings[:3]]
+            objective = f"Generate hypotheses from {len(novel_findings)} novel findings"
+            context = {
+                "finding_ids": [f["finding_id"] for f in novel_findings],
+                "max_hypotheses": 5,
+            }
+        else:
+            objective = "Generate new hypotheses from current knowledge"
+            context = {"max_hypotheses": 3}
+
+        return Task(
+            task_id=str(uuid4()),
+            task_type=TaskType.GENERATE_HYPOTHESIS,
+            status=TaskStatus.PENDING,
+            objective=objective,
+            context=context,
+        )
+
+    def _propose_next_tasks(
+        self,
+        cycle_id: str,
+        max_parallel_tasks: int = 5
+    ) -> List[Task]:
+        """
+        Propose tasks with intelligent prioritization.
+
+        This method analyzes the world model to identify knowledge gaps and
+        creates a prioritized list of tasks to address them.
+
+        Args:
+            cycle_id: The cycle ID for task assignment
+            max_parallel_tasks: Maximum number of tasks to propose
+
+        Returns:
+            List of Task objects, sorted by priority
+        """
+        # Analyze world model for gaps
+        gaps = self._identify_knowledge_gaps()
+
+        # Score potential tasks
+        task_candidates = []
+
+        # Data analysis tasks for unexplored datasets
+        for gap in gaps["unexplored_data"]:
+            score = self._score_task_priority(gap, type="data_analysis")
+            task = self._create_analysis_task(gap, cycle_id)
+            task_candidates.append((score, task))
+
+        # Literature search for under-supported claims
+        for gap in gaps["weak_evidence"]:
+            score = self._score_task_priority(gap, type="literature")
+            task = self._create_literature_task(gap, cycle_id)
+            task_candidates.append((score, task))
+
+        # Hypothesis generation for novel findings
+        if gaps["novel_findings_count"] > 3:
+            score = self._score_task_priority(
+                {
+                    "novelty": 0.8,
+                    "validation_strength": 0.3,
+                    "objective_alignment": 0.7,
+                },
+                type="hypothesis_gen"
+            )
+            task = self._create_hypothesis_task(cycle_id, gaps["novel_findings"])
+            task_candidates.append((score, task))
+
+        # Sort by priority and return top N
+        task_candidates.sort(reverse=True, key=lambda x: x[0])
+
+        # Extract tasks (without scores) and limit to max_parallel_tasks
+        return [task for score, task in task_candidates[:max_parallel_tasks]]
+
     def __repr__(self) -> str:
         stats = self.get_stats()
         return (
