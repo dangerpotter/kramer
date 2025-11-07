@@ -7,6 +7,7 @@ import anthropic
 
 from kramer.world_model import WorldModel, Finding, Node, NodeType
 from kramer.api_clients.semantic_scholar import SemanticScholarClient, PaperMetadata
+from src.utils.cost_tracker import CostTracker
 
 # Import RAG components (optional dependencies)
 try:
@@ -72,6 +73,7 @@ class LiteratureAgent:
         self.anthropic_client = anthropic.Anthropic(api_key=anthropic_api_key)
         self.ss_client = SemanticScholarClient(api_key=semantic_scholar_api_key)
         self.model = model
+        self.total_cost: float = 0.0  # Track total API costs
         self.paper_processor = paper_processor
         self.rag_engine = rag_engine
         self.use_full_text = use_full_text and RAG_AVAILABLE
@@ -94,7 +96,7 @@ class LiteratureAgent:
         query: str,
         max_papers: int = 10,
         hypotheses: Optional[List[str]] = None
-    ) -> List[ExtractedClaim]:
+    ) -> Dict[str, Any]:
         """
         Search for papers and extract claims.
 
@@ -104,7 +106,10 @@ class LiteratureAgent:
             hypotheses: Optional list of current hypotheses to consider
 
         Returns:
-            List of extracted claims with full citations
+            Dictionary with:
+                - papers: List of paper metadata
+                - claims: List of extracted claims with full citations
+                - cost: Total API cost in dollars
         """
         # Step 1: Search for papers
         print(f"Searching for papers on: {query}")
@@ -113,7 +118,11 @@ class LiteratureAgent:
 
         if not papers:
             print("No papers found")
-            return []
+            return {
+                "papers": [],
+                "claims": [],
+                "cost": self.total_cost,
+            }
 
         # Build hypothesis context for full-text extraction
         hypothesis_context = query
@@ -209,7 +218,11 @@ class LiteratureAgent:
         print(f"✓ Papers with full text: {papers_with_full_text}/{min(len(papers), self.max_papers_to_process)}")
         print(f"✓ World model: {self.world_model.summary()}")
 
-        return all_claims
+        return {
+            "papers": papers,
+            "claims": all_claims,
+            "cost": self.total_cost,
+        }
 
     async def process_full_paper(self, paper_id: str) -> Dict[str, Any]:
         """
@@ -392,6 +405,10 @@ Confidence: [0.0-1.0]
             temperature=0,
             messages=[{"role": "user", "content": prompt}]
         )
+
+        # Track API cost
+        cost = CostTracker.track_call(self.model, response)
+        self.total_cost += cost
 
         # Parse response
         response_text = response.content[0].text

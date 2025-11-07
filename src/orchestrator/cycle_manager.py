@@ -26,6 +26,7 @@ class TaskStatus(str, Enum):
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    BUDGET_EXCEEDED = "budget_exceeded"
 
 
 class TaskType(str, Enum):
@@ -187,6 +188,8 @@ class Orchestrator:
         world_model: WorldModel,
         max_concurrent_tasks: int = 3,
         default_budget: float = 100.0,
+        max_cycle_budget: float = 10.0,
+        max_total_budget: float = 100.0,
     ):
         """
         Initialize the orchestrator.
@@ -195,10 +198,14 @@ class Orchestrator:
             world_model: The world model to use for knowledge storage
             max_concurrent_tasks: Maximum number of tasks to run concurrently
             default_budget: Default budget in dollars for cycles
+            max_cycle_budget: Maximum budget per cycle in dollars
+            max_total_budget: Maximum total budget for all cycles in dollars
         """
         self.world_model = world_model
         self.max_concurrent_tasks = max_concurrent_tasks
         self.default_budget = default_budget
+        self.max_cycle_budget = max_cycle_budget
+        self.max_total_budget = max_total_budget
 
         # Track cycles and tasks
         self.cycles: Dict[str, Cycle] = {}
@@ -593,9 +600,8 @@ Create 2-4 tasks that would best advance this research objective."""
                 break
 
             # Check budget
-            budget_remaining = self.default_budget - self.total_budget_used
-            min_cycle_budget = 5.0
-            if budget_remaining < min_cycle_budget:
+            budget_remaining = self.max_total_budget - self.total_budget_used
+            if budget_remaining < self.max_cycle_budget:
                 print(f"Insufficient budget remaining (${budget_remaining:.2f}). Stopping discovery loop.")
                 break
 
@@ -629,6 +635,9 @@ Create 2-4 tasks that would best advance this research objective."""
         print(f"  Total time: {total_elapsed:.1f}s")
         print(f"  Total budget used: ${self.total_budget_used:.2f}")
 
+        # Print detailed budget report
+        self.print_budget_report()
+
         return all_cycles
 
     async def _execute_cycle(self, cycle: Cycle) -> None:
@@ -644,8 +653,14 @@ Create 2-4 tasks that would best advance this research objective."""
         # Execute tasks in parallel
         await self._execute_tasks_parallel(pending_tasks, cycle)
 
-        # Mark cycle as completed
-        cycle.status = TaskStatus.COMPLETED
+        # Check if budget was exceeded during execution
+        if cycle.budget_used > self.max_cycle_budget:
+            cycle.status = TaskStatus.BUDGET_EXCEEDED
+            print(f"⚠️  Cycle budget exceeded: ${cycle.budget_used:.2f} > ${self.max_cycle_budget:.2f}")
+        else:
+            # Mark cycle as completed
+            cycle.status = TaskStatus.COMPLETED
+
         cycle.completed_at = datetime.utcnow()
 
     async def _execute_tasks_parallel(self, tasks: List[Task], cycle: Cycle) -> List[Dict[str, Any]]:
@@ -826,9 +841,9 @@ Create 2-4 tasks that would best advance this research objective."""
             True if a new cycle should be spawned
         """
         # Check if we have budget remaining
-        min_cycle_budget = 5.0  # Minimum budget for a cycle
-        budget_remaining = self.default_budget - self.total_budget_used
-        if budget_remaining < min_cycle_budget:
+        budget_remaining = self.max_total_budget - self.total_budget_used
+        if budget_remaining < self.max_cycle_budget:
+            print(f"Insufficient budget for new cycle: ${budget_remaining:.2f} remaining")
             return False
 
         # Count new hypotheses added during this cycle
@@ -1033,6 +1048,59 @@ Create 2-4 tasks that would best advance this research objective."""
                 else None
             ),
         }
+
+    def get_budget_report(self) -> Dict[str, Any]:
+        """
+        Get a detailed budget report.
+
+        Returns:
+            Dictionary with budget information:
+                - total_spent: Total budget used across all cycles
+                - total_budget: Maximum total budget
+                - remaining: Budget remaining
+                - cycles: List of cycle budget information
+        """
+        cycles_budget_info = []
+        for cycle in self.cycles.values():
+            cycles_budget_info.append({
+                "cycle_id": cycle.cycle_id,
+                "objective": cycle.objective[:50] + "..." if len(cycle.objective) > 50 else cycle.objective,
+                "spent": cycle.budget_used,
+                "status": cycle.status.value,
+                "max_budget": self.max_cycle_budget,
+                "exceeded": cycle.budget_used > self.max_cycle_budget,
+            })
+
+        return {
+            "total_spent": self.total_budget_used,
+            "total_budget": self.max_total_budget,
+            "remaining": self.max_total_budget - self.total_budget_used,
+            "max_cycle_budget": self.max_cycle_budget,
+            "cycles": cycles_budget_info,
+        }
+
+    def print_budget_report(self) -> None:
+        """Print a formatted budget report to console."""
+        report = self.get_budget_report()
+
+        print("\n" + "="*60)
+        print("BUDGET REPORT")
+        print("="*60)
+        print(f"Total Budget:     ${report['total_budget']:.2f}")
+        print(f"Total Spent:      ${report['total_spent']:.2f}")
+        print(f"Remaining:        ${report['remaining']:.2f}")
+        print(f"Utilization:      {(report['total_spent'] / report['total_budget'] * 100):.1f}%")
+        print(f"\nCycle Budget:     ${report['max_cycle_budget']:.2f} per cycle")
+        print(f"Total Cycles:     {len(report['cycles'])}")
+        print("\nCycle Breakdown:")
+        print("-"*60)
+
+        for i, cycle_info in enumerate(report['cycles'], 1):
+            status_marker = "✓" if cycle_info['status'] == "completed" else "⚠️" if cycle_info['exceeded'] else "•"
+            print(f"{status_marker} Cycle {i}: ${cycle_info['spent']:.2f} - {cycle_info['status']}")
+            print(f"   {cycle_info['objective']}")
+
+        print("="*60 + "\n")
 
     def __repr__(self) -> str:
         stats = self.get_stats()
