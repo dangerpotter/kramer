@@ -11,6 +11,7 @@ import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 from uuid import uuid4
 
@@ -190,6 +191,10 @@ class Orchestrator:
         default_budget: float = 100.0,
         max_cycle_budget: float = 10.0,
         max_total_budget: float = 100.0,
+        auto_synthesize: bool = True,
+        synthesis_interval: Optional[int] = None,
+        synthesis_threshold: float = 0.8,
+        output_dir: str = "outputs",
     ):
         """
         Initialize the orchestrator.
@@ -200,12 +205,20 @@ class Orchestrator:
             default_budget: Default budget in dollars for cycles
             max_cycle_budget: Maximum budget per cycle in dollars
             max_total_budget: Maximum total budget for all cycles in dollars
+            auto_synthesize: Whether to automatically trigger synthesis
+            synthesis_interval: Synthesize every N cycles, or None for auto
+            synthesis_threshold: Confidence threshold for completion detection
+            output_dir: Directory for report outputs
         """
         self.world_model = world_model
         self.max_concurrent_tasks = max_concurrent_tasks
         self.default_budget = default_budget
         self.max_cycle_budget = max_cycle_budget
         self.max_total_budget = max_total_budget
+        self.auto_synthesize = auto_synthesize
+        self.synthesis_interval = synthesis_interval
+        self.synthesis_threshold = synthesis_threshold
+        self.output_dir = output_dir
 
         # Track cycles and tasks
         self.cycles: Dict[str, Cycle] = {}
@@ -214,6 +227,9 @@ class Orchestrator:
 
         # Budget tracking
         self.total_budget_used: float = 0.0
+
+        # Synthesis tracking
+        self.synthesis_results: List[Dict[str, Any]] = []
 
         # Concurrency control
         self.semaphore = asyncio.Semaphore(max_concurrent_tasks)
@@ -548,7 +564,7 @@ Create 2-4 tasks that would best advance this research objective."""
         max_runtime: float = 43200.0,  # 12 hours in seconds
         max_tasks_per_cycle: int = 10,
         budget: Optional[float] = None,
-    ) -> List[Cycle]:
+    ) -> Dict[str, Any]:
         """
         Run autonomous discovery cycles with recursive spawning.
 
@@ -558,6 +574,7 @@ Create 2-4 tasks that would best advance this research objective."""
         3. Check if new cycles should be spawned based on findings
         4. Recursively spawn and execute new cycles
         5. Stop when max_cycles, max_runtime, or budget is exhausted
+        6. Automatically synthesize findings based on configuration
 
         Args:
             objective: Initial research objective
@@ -567,7 +584,11 @@ Create 2-4 tasks that would best advance this research objective."""
             budget: Total budget for all cycles
 
         Returns:
-            List of all cycles that were executed
+            Dictionary containing:
+                - cycles: List of all cycles that were executed
+                - cycles_completed: Number of cycles completed
+                - synthesis_reports: List of synthesis results
+                - total_cost: Total budget used
         """
         start_time = datetime.utcnow()
         all_cycles = []
@@ -585,6 +606,11 @@ Create 2-4 tasks that would best advance this research objective."""
         )
         all_cycles.append(current_cycle)
         cycles_run += 1
+
+        # Check for synthesis trigger after initial cycle
+        if self.auto_synthesize and self._should_trigger_synthesis(cycles_run - 1):
+            print(f"Triggering synthesis at cycle {cycles_run}")
+            await self._execute_synthesis_task(cycles_run - 1)
 
         # Discovery loop: spawn follow-up cycles as needed
         while cycles_run < max_cycles:
@@ -628,6 +654,21 @@ Create 2-4 tasks that would best advance this research objective."""
             current_cycle = follow_up_cycle
             cycles_run += 1
 
+            # Check for synthesis trigger after this cycle
+            if self.auto_synthesize and self._should_trigger_synthesis(cycles_run - 1):
+                print(f"Triggering synthesis at cycle {cycles_run}")
+                await self._execute_synthesis_task(cycles_run - 1)
+
+                # Check if this was final synthesis (objective complete)
+                if self._check_objective_completion():
+                    print("Objective complete - ending discovery loop")
+                    break
+
+        # Final synthesis if we haven't done one yet
+        if self.auto_synthesize and not self.synthesis_results:
+            print(f"Triggering final synthesis at end of discovery loop")
+            await self._execute_synthesis_task(cycles_run - 1)
+
         # Print summary
         total_elapsed = (datetime.utcnow() - start_time).total_seconds()
         print(f"\nDiscovery loop completed:")
@@ -635,10 +676,21 @@ Create 2-4 tasks that would best advance this research objective."""
         print(f"  Total time: {total_elapsed:.1f}s")
         print(f"  Total budget used: ${self.total_budget_used:.2f}")
 
+        if self.synthesis_results:
+            print(f"  Synthesis reports generated: {len(self.synthesis_results)}")
+            for i, result in enumerate(self.synthesis_results, 1):
+                report_path = result.get("metadata", {}).get("report_path", "unknown")
+                print(f"    {i}. {report_path}")
+
         # Print detailed budget report
         self.print_budget_report()
 
-        return all_cycles
+        return {
+            "cycles": all_cycles,
+            "cycles_completed": cycles_run,
+            "synthesis_reports": self.synthesis_results,
+            "total_cost": self.total_budget_used,
+        }
 
     async def _execute_cycle(self, cycle: Cycle) -> None:
         """
@@ -791,14 +843,42 @@ Create 2-4 tasks that would best advance this research objective."""
                     result = await coordinator.execute_hypothesis_test(task, self.world_model)
 
                 case TaskType.SYNTHESIZE_FINDINGS:
-                    # TODO: Implement synthesis agent
+                    from src.reporting.report_generator import ReportGenerator
+
+                    # Extract parameters
+                    output_dir = task.context.get("output_dir", self.output_dir)
+                    report_name = task.context.get("report_name", f"discovery_report_{task.task_id[:8]}")
+                    min_confidence = task.context.get("min_confidence", 0.7)
+                    generate_narratives = task.context.get("generate_narratives", True)
+
+                    # Create generator
+                    generator = ReportGenerator(
+                        world_model=self.world_model,
+                        min_confidence=min_confidence,
+                        anthropic_api_key=os.getenv("ANTHROPIC_API_KEY") if generate_narratives else None,
+                    )
+
+                    # Generate report
+                    output_path = Path(output_dir) / f"{report_name}.md"
+                    report_result = generator.generate_report(
+                        output_path=output_path,
+                        generate_narratives=generate_narratives,
+                        include_appendix=True,
+                    )
+
+                    # Return results
                     result = TaskResult(
                         success=True,
                         task_id=task.task_id,
                         task_type=task.task_type.value,
-                        findings=[],
-                        cost=0.0,
-                        metadata={"status": "not_implemented"},
+                        findings=[{
+                            "type": "synthesis",
+                            "report_path": str(report_result["report"]),
+                            "appendix_path": str(report_result.get("appendix")),
+                            "discoveries_count": report_result.get("discoveries_count", 0),
+                        }],
+                        cost=report_result.get("cost", 0.0),
+                        metadata={"report_path": str(report_result["report"])},
                     )
 
                 case _:
@@ -1031,6 +1111,211 @@ Create 2-4 tasks that would best advance this research objective."""
         new_cycle.status = TaskStatus.PENDING
 
         return new_cycle
+
+    def _get_recent_findings(self, num_cycles: int = 3) -> List[Dict[str, Any]]:
+        """
+        Get findings from the most recent N cycles.
+
+        Args:
+            num_cycles: Number of recent cycles to retrieve findings from
+
+        Returns:
+            List of findings from recent cycles
+        """
+        recent_findings = []
+
+        # Get the most recent cycles
+        sorted_cycles = sorted(
+            self.cycles.values(),
+            key=lambda c: c.started_at if c.started_at else datetime.min,
+            reverse=True
+        )
+
+        recent_cycle_ids = [c.cycle_id for c in sorted_cycles[:num_cycles]]
+
+        # Collect findings from these cycles
+        for cycle in sorted_cycles[:num_cycles]:
+            if not cycle.started_at:
+                continue
+
+            # Get findings created during this cycle
+            for node_id, data in self.world_model.graph.nodes(data=True):
+                if data.get("node_type") != NodeType.FINDING.value:
+                    continue
+
+                node_created = data.get("created_at")
+                if node_created and cycle.started_at:
+                    # Parse datetime if it's a string
+                    if isinstance(node_created, str):
+                        try:
+                            node_created = datetime.fromisoformat(node_created)
+                        except (ValueError, AttributeError):
+                            continue
+
+                    if node_created >= cycle.started_at:
+                        recent_findings.append({
+                            "node_id": node_id,
+                            "text": data.get("text"),
+                            "confidence": data.get("confidence", 0.0),
+                            "cycle_id": cycle.cycle_id,
+                        })
+
+        return recent_findings
+
+    def _compute_findings_rate(self) -> List[float]:
+        """
+        Compute the rate of new findings per cycle.
+
+        Returns:
+            List of findings counts per cycle (in chronological order)
+        """
+        findings_per_cycle = []
+
+        # Sort cycles chronologically
+        sorted_cycles = sorted(
+            self.cycles.values(),
+            key=lambda c: c.started_at if c.started_at else datetime.min
+        )
+
+        for cycle in sorted_cycles:
+            if not cycle.started_at:
+                continue
+
+            # Count findings created during this cycle
+            count = 0
+            for node_id, data in self.world_model.graph.nodes(data=True):
+                if data.get("node_type") != NodeType.FINDING.value:
+                    continue
+
+                node_created = data.get("created_at")
+                if node_created and cycle.started_at:
+                    # Parse datetime if it's a string
+                    if isinstance(node_created, str):
+                        try:
+                            node_created = datetime.fromisoformat(node_created)
+                        except (ValueError, AttributeError):
+                            continue
+
+                    # Check if created during this cycle
+                    cycle_end = cycle.completed_at if cycle.completed_at else datetime.utcnow()
+                    if cycle.started_at <= node_created <= cycle_end:
+                        count += 1
+
+            findings_per_cycle.append(float(count))
+
+        return findings_per_cycle
+
+    def _check_objective_completion(self) -> bool:
+        """
+        Check if research objective is complete.
+
+        Returns:
+            True if objective appears to be complete
+        """
+        # Get recent findings (last 3 cycles)
+        recent_findings = self._get_recent_findings(num_cycles=3)
+
+        if not recent_findings:
+            return False
+
+        # Count high-confidence findings
+        high_conf = [f for f in recent_findings if f["confidence"] > self.synthesis_threshold]
+
+        # Need at least 5 quality findings
+        if len(high_conf) < 5:
+            return False
+
+        # Check diminishing returns (new findings declining)
+        findings_rate = self._compute_findings_rate()
+
+        if len(findings_rate) < 2:
+            return False  # Not enough data to determine trend
+
+        # Check if findings rate is declining (plateauing)
+        recent_rate = findings_rate[-1]
+        avg_rate = sum(findings_rate) / len(findings_rate) if findings_rate else 0
+
+        if avg_rate == 0:
+            return False
+
+        # If recent rate is less than 50% of average, we're plateauing
+        if recent_rate < 0.5 * avg_rate:
+            return True
+
+        return False
+
+    def _should_trigger_synthesis(self, current_cycle_num: int) -> bool:
+        """
+        Determine if synthesis should run.
+
+        Args:
+            current_cycle_num: Current cycle number (0-indexed)
+
+        Returns:
+            True if synthesis should be triggered
+        """
+        # Interval-based: Every N cycles
+        if self.synthesis_interval and (current_cycle_num + 1) % self.synthesis_interval == 0:
+            return True
+
+        # Completion-based: Check if objective met
+        if self._check_objective_completion():
+            return True
+
+        # Budget-based: 90% of budget used
+        if self.total_budget_used >= 0.9 * self.max_total_budget:
+            return True
+
+        return False
+
+    async def _execute_synthesis_task(self, current_cycle_num: int) -> Optional[Dict[str, Any]]:
+        """
+        Execute a synthesis task to generate a report.
+
+        Args:
+            current_cycle_num: Current cycle number
+
+        Returns:
+            Synthesis result dictionary or None if failed
+        """
+        from src.orchestrator.agent_coordinator import TaskResult
+
+        # Create synthesis task
+        synthesis_task = Task(
+            task_id=str(uuid4()),
+            task_type=TaskType.SYNTHESIZE_FINDINGS,
+            status=TaskStatus.PENDING,
+            objective=f"Synthesize discoveries from cycle {current_cycle_num + 1}",
+            context={
+                "output_dir": self.output_dir,
+                "report_name": f"discovery_report_cycle_{current_cycle_num + 1}",
+                "min_confidence": 0.7,
+                "generate_narratives": True,
+            },
+        )
+
+        # Execute synthesis task
+        # We need to simulate a cycle context for the task execution
+        # Create a temporary cycle to hold this task
+        temp_cycle = Cycle(
+            cycle_id=f"synthesis_{current_cycle_num}",
+            objective="Synthesis",
+            status=TaskStatus.RUNNING,
+            tasks=[synthesis_task],
+        )
+        temp_cycle.started_at = datetime.utcnow()
+
+        # Execute the task
+        result_dict = await self._execute_task(synthesis_task, temp_cycle)
+
+        # Store result
+        if result_dict.get("success"):
+            self.synthesis_results.append(result_dict)
+            print(f"✓ Synthesis complete: {result_dict.get('metadata', {}).get('report_path')}")
+        else:
+            print(f"⚠️  Synthesis failed: {result_dict.get('error')}")
+
+        return result_dict
 
     def get_cycle(self, cycle_id: str) -> Optional[Cycle]:
         """Get a cycle by ID."""
