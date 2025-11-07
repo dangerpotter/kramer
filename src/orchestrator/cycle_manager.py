@@ -843,13 +843,14 @@ Create 2-4 tasks that would best advance this research objective."""
                     result = await coordinator.execute_hypothesis_test(task, self.world_model)
 
                 case TaskType.SYNTHESIZE_FINDINGS:
-                    from src.reporting.report_generator import ReportGenerator
+                    from src.reporting.report_generator import ReportGenerator, ReportConfig
 
                     # Extract parameters
                     output_dir = task.context.get("output_dir", self.output_dir)
                     report_name = task.context.get("report_name", f"discovery_report_{task.task_id[:8]}")
                     min_confidence = task.context.get("min_confidence", 0.7)
                     generate_narratives = task.context.get("generate_narratives", True)
+                    multi_report = task.context.get("multi_report", False)
 
                     # Create generator
                     generator = ReportGenerator(
@@ -858,28 +859,63 @@ Create 2-4 tasks that would best advance this research objective."""
                         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY") if generate_narratives else None,
                     )
 
-                    # Generate report
-                    output_path = Path(output_dir) / f"{report_name}.md"
-                    report_result = generator.generate_report(
-                        output_path=output_path,
-                        generate_narratives=generate_narratives,
-                        include_appendix=True,
-                    )
+                    # Generate report(s)
+                    if multi_report:
+                        # Generate multiple reports with different focuses
+                        report_configs = task.context.get("report_configs")  # Optional custom configs
+                        report_result = generator.generate_multiple_reports(
+                            output_dir=Path(output_dir),
+                            report_configs=report_configs,
+                            generate_narratives=generate_narratives,
+                            include_appendix=True,
+                        )
 
-                    # Return results
-                    result = TaskResult(
-                        success=True,
-                        task_id=task.task_id,
-                        task_type=task.task_type.value,
-                        findings=[{
-                            "type": "synthesis",
-                            "report_path": str(report_result["report"]),
-                            "appendix_path": str(report_result.get("appendix")),
-                            "discoveries_count": report_result.get("discoveries_count", 0),
-                        }],
-                        cost=report_result.get("cost", 0.0),
-                        metadata={"report_path": str(report_result["report"])},
-                    )
+                        # Format results for multi-report
+                        findings = []
+                        for report in report_result.get("reports", []):
+                            findings.append({
+                                "type": "synthesis",
+                                "report_name": report["name"],
+                                "report_path": str(report["report"]),
+                                "appendix_path": str(report.get("appendix", "")),
+                                "discoveries_count": report.get("discoveries_count", 0),
+                                "total_findings": report.get("total_findings", 0),
+                            })
+
+                        result = TaskResult(
+                            success=True,
+                            task_id=task.task_id,
+                            task_type=task.task_type.value,
+                            findings=findings,
+                            cost=report_result.get("total_cost", 0.0),
+                            metadata={
+                                "output_dir": str(report_result["output_dir"]),
+                                "reports_generated": len(findings),
+                            },
+                        )
+                    else:
+                        # Generate single report
+                        output_path = Path(output_dir) / f"{report_name}.md"
+                        report_result = generator.generate_report(
+                            output_path=output_path,
+                            generate_narratives=generate_narratives,
+                            include_appendix=True,
+                        )
+
+                        # Return results
+                        result = TaskResult(
+                            success=True,
+                            task_id=task.task_id,
+                            task_type=task.task_type.value,
+                            findings=[{
+                                "type": "synthesis",
+                                "report_path": str(report_result["report"]),
+                                "appendix_path": str(report_result.get("appendix")),
+                                "discoveries_count": report_result.get("discoveries_count", 0),
+                            }],
+                            cost=report_result.get("cost", 0.0),
+                            metadata={"report_path": str(report_result["report"])},
+                        )
 
                 case _:
                     result = TaskResult(
