@@ -66,6 +66,18 @@ class Citation:
 
 
 @dataclass
+class ReportConfig:
+    """Configuration for generating a specific type of report."""
+    name: str
+    min_confidence: float = 0.7
+    sort_by: str = "both"  # "confidence", "novelty", or "both"
+    top_n: Optional[int] = None  # Limit to top N findings/discoveries
+    filter_type: str = "all"  # "all", "tested_hypotheses_only", "novel_only"
+    include_all: bool = True  # Include all findings or just top discoveries
+    max_discoveries: int = 5  # Maximum discoveries in report
+
+
+@dataclass
 class Discovery:
     """Represents a grouped set of findings that form a coherent discovery."""
     title: str
@@ -169,6 +181,128 @@ class ReportGenerator:
 
         logger.info(f"Extracted {len(high_confidence_findings)} high-confidence findings")
         return high_confidence_findings
+
+    def _filter_findings_by_criteria(
+        self,
+        findings: List[Dict[str, Any]],
+        filter_type: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Filter findings based on specific criteria.
+
+        Args:
+            findings: List of findings to filter
+            filter_type: Type of filter to apply
+
+        Returns:
+            Filtered list of findings
+        """
+        if filter_type == "all":
+            return findings
+
+        elif filter_type == "tested_hypotheses_only":
+            # Filter for findings that are connected to tested hypotheses
+            filtered = []
+            for finding in findings:
+                node_id = finding["node_id"]
+                # Check if connected to any hypotheses
+                has_hypothesis = False
+                for source, _, edge_data in self.world_model.graph.in_edges(node_id, data=True):
+                    source_node = self.world_model.get_node(source)
+                    if source_node and source_node.get("node_type") == NodeType.HYPOTHESIS.value:
+                        # Check if hypothesis has been tested (has confidence score)
+                        if source_node.get("confidence") is not None:
+                            has_hypothesis = True
+                            break
+
+                if has_hypothesis:
+                    filtered.append(finding)
+
+            logger.info(f"Filtered {len(findings)} findings to {len(filtered)} with tested hypotheses")
+            return filtered
+
+        elif filter_type == "novel_only":
+            # Filter for findings with high novelty scores
+            filtered = [f for f in findings if f.get("novelty_score", 0.0) > 0.5]
+            logger.info(f"Filtered {len(findings)} findings to {len(filtered)} novel findings")
+            return filtered
+
+        else:
+            logger.warning(f"Unknown filter_type: {filter_type}, returning all findings")
+            return findings
+
+    def _sort_findings(
+        self,
+        findings: List[Dict[str, Any]],
+        sort_by: str
+    ) -> List[Dict[str, Any]]:
+        """
+        Sort findings by specified criteria.
+
+        Args:
+            findings: List of findings to sort
+            sort_by: Sorting criteria ("confidence", "novelty", or "both")
+
+        Returns:
+            Sorted list of findings
+        """
+        if sort_by == "confidence":
+            return sorted(findings, key=lambda x: x["confidence"], reverse=True)
+        elif sort_by == "novelty":
+            return sorted(findings, key=lambda x: x.get("novelty_score", 0.0), reverse=True)
+        elif sort_by == "both":
+            return sorted(
+                findings,
+                key=lambda x: (x["confidence"], x.get("novelty_score", 0.0)),
+                reverse=True
+            )
+        else:
+            logger.warning(f"Unknown sort_by: {sort_by}, returning unsorted")
+            return findings
+
+    def _apply_report_config(
+        self,
+        config: ReportConfig
+    ) -> Tuple[List[Dict[str, Any]], List[Discovery]]:
+        """
+        Apply a report configuration to extract and process findings.
+
+        Args:
+            config: Report configuration to apply
+
+        Returns:
+            Tuple of (filtered_findings, discoveries)
+        """
+        # Temporarily update min_confidence for this config
+        original_min_confidence = self.min_confidence
+        original_max_discoveries = self.max_discoveries
+
+        self.min_confidence = config.min_confidence
+        self.max_discoveries = config.max_discoveries
+
+        try:
+            # Extract findings with configured confidence threshold
+            findings = self.extract_high_confidence_findings()
+
+            # Apply filtering
+            findings = self._filter_findings_by_criteria(findings, config.filter_type)
+
+            # Apply sorting
+            findings = self._sort_findings(findings, config.sort_by)
+
+            # Apply top_n limit if specified
+            if config.top_n is not None:
+                findings = findings[:config.top_n]
+
+            # Group into discoveries
+            discoveries = self.group_findings_into_discoveries(findings)
+
+            return findings, discoveries
+
+        finally:
+            # Restore original settings
+            self.min_confidence = original_min_confidence
+            self.max_discoveries = original_max_discoveries
 
     def _get_supporting_nodes(self, node_id: str) -> Dict[str, List[Dict[str, Any]]]:
         """Get nodes that support this finding."""
@@ -636,6 +770,147 @@ Write in third person, present tense where appropriate.
 
         logger.info("Report generation complete!")
         return result
+
+    def generate_multiple_reports(
+        self,
+        output_dir: Path,
+        report_configs: Optional[List[ReportConfig]] = None,
+        generate_narratives: bool = True,
+        include_appendix: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Generate multiple reports with different focuses.
+
+        Args:
+            output_dir: Directory to write reports to
+            report_configs: List of report configurations (uses defaults if None)
+            generate_narratives: Whether to generate AI narratives
+            include_appendix: Whether to generate appendix for each report
+
+        Returns:
+            Dictionary with metadata about all generated reports:
+                - reports: List of report metadata dicts
+                - total_cost: Total narrative generation cost
+                - output_dir: Path to output directory
+        """
+        logger.info("Starting multi-report generation...")
+
+        # Use default configs if none provided
+        if report_configs is None:
+            report_configs = self._get_default_report_configs()
+
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        all_reports = []
+        total_cost = 0.0
+
+        for config in report_configs:
+            logger.info(f"Generating '{config.name}' report...")
+
+            # Reset citations for each report
+            self.citations = {}
+            self.citation_counter = 0
+
+            # Apply config to get filtered/sorted findings
+            findings, discoveries = self._apply_report_config(config)
+
+            if not discoveries:
+                logger.warning(f"No discoveries found for '{config.name}' report, skipping...")
+                continue
+
+            # Generate narratives if requested
+            if generate_narratives:
+                logger.info("Generating narratives with Claude API...")
+                for discovery in discoveries:
+                    discovery.narrative = self.generate_narrative(discovery)
+                    self._add_citations_to_discovery(discovery)
+            else:
+                logger.info("Using template-based narratives...")
+                for discovery in discoveries:
+                    discovery.narrative = self._generate_template_narrative(discovery)
+                    self._add_citations_to_discovery(discovery)
+
+            # Generate report
+            report_path = output_dir / f"{config.name}_report.md"
+            logger.info(f"Writing report to {report_path}...")
+            self._write_main_report(report_path, discoveries)
+
+            # Calculate statistics
+            all_findings = []
+            for discovery in discoveries:
+                all_findings.extend(discovery.findings)
+
+            high_confidence_count = len([f for f in all_findings if f.get("confidence", 0) > 0.8])
+
+            report_result = {
+                "name": config.name,
+                "report": report_path,
+                "discoveries_count": len(discoveries),
+                "total_findings": len(all_findings),
+                "high_confidence_findings": high_confidence_count,
+                "config": config,
+            }
+
+            # Generate appendix if requested
+            if include_appendix:
+                appendix_path = output_dir / f"{config.name}_report_appendix.md"
+                logger.info(f"Writing appendix to {appendix_path}...")
+                self._write_appendix(appendix_path, findings, discoveries)
+                report_result["appendix"] = appendix_path
+
+            all_reports.append(report_result)
+
+        logger.info(f"Multi-report generation complete! Generated {len(all_reports)} reports.")
+
+        return {
+            "reports": all_reports,
+            "total_cost": total_cost,
+            "output_dir": output_dir,
+        }
+
+    def _get_default_report_configs(self) -> List[ReportConfig]:
+        """
+        Get default report configurations as described in the paper.
+
+        Returns:
+            List of default ReportConfig objects
+        """
+        return [
+            ReportConfig(
+                name="comprehensive",
+                min_confidence=0.7,
+                sort_by="both",
+                include_all=True,
+                max_discoveries=10,
+                filter_type="all",
+            ),
+            ReportConfig(
+                name="high_confidence",
+                min_confidence=0.9,
+                sort_by="confidence",
+                include_all=False,
+                max_discoveries=5,
+                filter_type="all",
+            ),
+            ReportConfig(
+                name="novel_discoveries",
+                min_confidence=0.7,
+                sort_by="novelty",
+                top_n=10,
+                include_all=False,
+                max_discoveries=5,
+                filter_type="novel_only",
+            ),
+            ReportConfig(
+                name="validated_hypotheses",
+                min_confidence=0.7,
+                sort_by="both",
+                include_all=False,
+                max_discoveries=5,
+                filter_type="tested_hypotheses_only",
+            ),
+        ]
 
     def _write_main_report(self, output_path: Path, discoveries: List[Discovery]) -> None:
         """Write the main report markdown file."""
