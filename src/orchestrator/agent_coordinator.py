@@ -6,6 +6,7 @@ This module coordinates the execution of different specialized agents
 returns structured results.
 """
 
+import asyncio
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -83,7 +84,7 @@ class AgentCoordinator:
         self.notebooks_dir.mkdir(parents=True, exist_ok=True)
         self.plots_dir.mkdir(parents=True, exist_ok=True)
 
-    def execute_data_analysis(
+    async def execute_data_analysis(
         self,
         task: Task,
         world_model: WorldModel,
@@ -129,8 +130,9 @@ class AgentCoordinator:
                 plots_dir=self.plots_dir,
             )
 
-            # Run analysis
-            result = agent.analyze(
+            # Run analysis in thread pool to avoid blocking
+            result = await asyncio.to_thread(
+                agent.analyze,
                 objective=task.objective,
                 dataset_path=dataset_path,
                 world_model_context=world_model_context,
@@ -167,7 +169,7 @@ class AgentCoordinator:
                 error=str(e),
             )
 
-    def execute_literature_search(
+    async def execute_literature_search(
         self,
         task: Task,
         world_model: WorldModel,
@@ -201,12 +203,13 @@ class AgentCoordinator:
             hypothesis = task.context.get("hypothesis")
             max_papers = task.context.get("max_papers", 5)
 
+            # Run in thread pool to avoid blocking (if agent has blocking operations)
             if hypothesis:
                 # Search for hypothesis validation
-                result = agent.search_for_hypothesis(hypothesis)
+                result = await asyncio.to_thread(agent.search_for_hypothesis, hypothesis)
             else:
                 # General search based on objective
-                papers = agent.search(task.objective, max_results=max_papers)
+                papers = await asyncio.to_thread(agent.search, task.objective, max_results=max_papers)
                 result = {
                     "task": "literature_search",
                     "query": task.objective,
@@ -260,7 +263,7 @@ class AgentCoordinator:
                 error=str(e),
             )
 
-    def execute_hypothesis_generation(
+    async def execute_hypothesis_generation(
         self,
         task: Task,
         world_model: WorldModel,
@@ -288,8 +291,9 @@ class AgentCoordinator:
                 max_hypotheses=max_hypotheses,
             )
 
-            # Generate hypotheses
-            result = agent.generate_hypotheses(
+            # Generate hypotheses in thread pool
+            result = await asyncio.to_thread(
+                agent.generate_hypotheses,
                 current_cycle=current_cycle,
                 min_finding_confidence=min_finding_confidence,
             )
@@ -331,7 +335,7 @@ class AgentCoordinator:
                 error=str(e),
             )
 
-    def execute_hypothesis_test(
+    async def execute_hypothesis_test(
         self,
         task: Task,
         world_model: WorldModel,

@@ -97,6 +97,80 @@ class Cycle:
         }
 
 
+class TaskDependencyGraph:
+    """
+    Tracks task dependencies and determines execution order.
+
+    Manages task dependencies and provides methods to determine which tasks
+    are ready to execute based on completion status of their dependencies.
+    """
+
+    def __init__(self):
+        """Initialize the dependency graph."""
+        self.dependencies: Dict[str, Set[str]] = {}  # task_id -> set of dependency task_ids
+        self.completed: Set[str] = set()  # Set of completed task IDs
+        self.all_tasks: Dict[str, Task] = {}  # task_id -> Task object
+
+    def add_task(self, task: Task, depends_on: Optional[List[str]] = None) -> None:
+        """
+        Add a task to the dependency graph.
+
+        Args:
+            task: The task to add
+            depends_on: List of task IDs that this task depends on
+        """
+        self.all_tasks[task.task_id] = task
+        self.dependencies[task.task_id] = set(depends_on or [])
+
+    def get_ready_tasks(self) -> List[Task]:
+        """
+        Get all tasks that are ready to execute.
+
+        A task is ready if all its dependencies have been completed.
+
+        Returns:
+            List of Task objects that are ready to execute
+        """
+        ready = []
+        for task_id, deps in self.dependencies.items():
+            # Skip if already completed
+            if task_id in self.completed:
+                continue
+
+            # Check if all dependencies are completed
+            if deps.issubset(self.completed):
+                ready.append(self.all_tasks[task_id])
+
+        return ready
+
+    def mark_complete(self, task_id: str) -> None:
+        """
+        Mark a task as completed.
+
+        Args:
+            task_id: The ID of the completed task
+        """
+        self.completed.add(task_id)
+
+    def has_pending_tasks(self) -> bool:
+        """
+        Check if there are any pending tasks.
+
+        Returns:
+            True if there are tasks that haven't been completed
+        """
+        return len(self.completed) < len(self.all_tasks)
+
+    def get_pending_count(self) -> int:
+        """
+        Get the number of pending tasks.
+
+        Returns:
+            Number of tasks not yet completed
+        """
+        return len(self.all_tasks) - len(self.completed)
+
+
 class Orchestrator:
     """
     Orchestrates discovery cycles and manages task execution.
@@ -133,6 +207,9 @@ class Orchestrator:
 
         # Budget tracking
         self.total_budget_used: float = 0.0
+
+        # Concurrency control
+        self.semaphore = asyncio.Semaphore(max_concurrent_tasks)
 
     def create_cycle(
         self,
@@ -556,21 +633,90 @@ Create 2-4 tasks that would best advance this research objective."""
 
     async def _execute_cycle(self, cycle: Cycle) -> None:
         """
-        Execute all tasks in a cycle.
+        Execute all tasks in a cycle using parallel execution.
 
         Args:
             cycle: The cycle to execute
         """
-        # Create a task queue
+        # Get pending tasks
         pending_tasks = [t for t in cycle.tasks if t.status == TaskStatus.PENDING]
 
-        # Execute tasks
-        for task in pending_tasks:
-            await self._execute_task(task, cycle)
+        # Execute tasks in parallel
+        await self._execute_tasks_parallel(pending_tasks, cycle)
 
         # Mark cycle as completed
         cycle.status = TaskStatus.COMPLETED
         cycle.completed_at = datetime.utcnow()
+
+    async def _execute_tasks_parallel(self, tasks: List[Task], cycle: Cycle) -> List[Dict[str, Any]]:
+        """
+        Execute tasks in parallel with dependency tracking.
+
+        Args:
+            tasks: List of tasks to execute
+            cycle: The cycle these tasks belong to
+
+        Returns:
+            List of task results
+        """
+        # Build dependency graph
+        # For now, assume no dependencies between tasks (all can run in parallel)
+        # In the future, we can extract dependencies from task context
+        dep_graph = TaskDependencyGraph()
+        for task in tasks:
+            # Extract dependencies from task context if they exist
+            depends_on = task.context.get("depends_on", [])
+            dep_graph.add_task(task, depends_on)
+
+        results = []
+
+        # Execute tasks in waves based on dependencies
+        while dep_graph.has_pending_tasks():
+            # Get tasks that are ready to execute
+            ready_tasks = dep_graph.get_ready_tasks()
+
+            if not ready_tasks:
+                # No tasks ready (possible circular dependency or error)
+                print("Warning: No tasks ready but pending tasks remain. Breaking.")
+                break
+
+            # Create coroutines for ready tasks
+            coroutines = [
+                self._execute_task_with_semaphore(task, cycle)
+                for task in ready_tasks
+            ]
+
+            # Execute tasks concurrently
+            task_results = await asyncio.gather(*coroutines, return_exceptions=True)
+
+            # Process results and mark completed
+            for task, result in zip(ready_tasks, task_results):
+                if isinstance(result, Exception):
+                    # Handle exception
+                    print(f"Task {task.task_id} failed with exception: {result}")
+                    task.status = TaskStatus.FAILED
+                    task.error = str(result)
+                else:
+                    results.append(result)
+
+                # Mark task as complete in dependency graph
+                dep_graph.mark_complete(task.task_id)
+
+        return results
+
+    async def _execute_task_with_semaphore(self, task: Task, cycle: Cycle) -> Dict[str, Any]:
+        """
+        Execute a task with semaphore-based concurrency control.
+
+        Args:
+            task: The task to execute
+            cycle: The cycle this task belongs to
+
+        Returns:
+            Task result dictionary
+        """
+        async with self.semaphore:
+            return await self._execute_task(task, cycle)
 
     async def _execute_task(self, task: Task, cycle: Cycle) -> Dict[str, Any]:
         """
@@ -601,16 +747,16 @@ Create 2-4 tasks that would best advance this research objective."""
             # Execute based on task type
             match task.task_type:
                 case TaskType.ANALYZE_DATA:
-                    result = coordinator.execute_data_analysis(task, self.world_model)
+                    result = await coordinator.execute_data_analysis(task, self.world_model)
 
                 case TaskType.SEARCH_LITERATURE:
-                    result = coordinator.execute_literature_search(task, self.world_model)
+                    result = await coordinator.execute_literature_search(task, self.world_model)
 
                 case TaskType.GENERATE_HYPOTHESIS:
-                    result = coordinator.execute_hypothesis_generation(task, self.world_model)
+                    result = await coordinator.execute_hypothesis_generation(task, self.world_model)
 
                 case TaskType.TEST_HYPOTHESIS:
-                    result = coordinator.execute_hypothesis_test(task, self.world_model)
+                    result = await coordinator.execute_hypothesis_test(task, self.world_model)
 
                 case TaskType.SYNTHESIZE_FINDINGS:
                     # TODO: Implement synthesis agent

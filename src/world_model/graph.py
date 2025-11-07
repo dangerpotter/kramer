@@ -4,6 +4,7 @@ WorldModel - Graph-based knowledge store for scientific findings and hypotheses.
 Uses NetworkX for the graph structure and SQLite for persistence.
 """
 
+import asyncio
 import json
 import sqlite3
 from datetime import datetime
@@ -57,6 +58,9 @@ class WorldModel:
         # Track creation time
         self.created_at = datetime.utcnow()
         self.updated_at = datetime.utcnow()
+
+        # Async-safe locking for database writes
+        self._db_lock = asyncio.Lock()
 
         # Initialize database if path provided
         if db_path:
@@ -116,7 +120,10 @@ class WorldModel:
         node_id: Optional[str] = None,
     ) -> str:
         """
-        Add a node to the world model.
+        Add a node to the world model (synchronous).
+
+        Note: NetworkX graph modifications are thread-safe for reading but not for writing.
+        For async contexts with multiple concurrent writes, use add_node_async instead.
 
         Args:
             node_type: Type of the node
@@ -150,6 +157,32 @@ class WorldModel:
 
         self.updated_at = datetime.utcnow()
         return node_id
+
+    async def add_node_async(
+        self,
+        node_type: NodeType,
+        text: str,
+        confidence: Optional[float] = None,
+        provenance: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        node_id: Optional[str] = None,
+    ) -> str:
+        """
+        Add a node to the world model (async version with locking).
+
+        Args:
+            node_type: Type of the node
+            text: Main text content of the node
+            confidence: Confidence score (0.0 to 1.0)
+            provenance: Source of the information (e.g., "analysis/script.py:42")
+            metadata: Additional metadata as a dictionary
+            node_id: Optional custom node ID (generates UUID if not provided)
+
+        Returns:
+            The node ID
+        """
+        async with self._db_lock:
+            return self.add_node(node_type, text, confidence, provenance, metadata, node_id)
 
     def add_finding(
         self,
@@ -309,7 +342,7 @@ class WorldModel:
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
-        Add an edge (relationship) between two nodes.
+        Add an edge (relationship) between two nodes (synchronous).
 
         Args:
             source: Source node ID
@@ -331,6 +364,25 @@ class WorldModel:
         )
 
         self.updated_at = datetime.utcnow()
+
+    async def add_edge_async(
+        self,
+        source: str,
+        target: str,
+        edge_type: EdgeType,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        Add an edge (relationship) between two nodes (async version with locking).
+
+        Args:
+            source: Source node ID
+            target: Target node ID
+            edge_type: Type of relationship
+            metadata: Additional metadata for the edge
+        """
+        async with self._db_lock:
+            self.add_edge(source, target, edge_type, metadata)
 
     def get_node(self, node_id: str) -> Optional[Dict[str, Any]]:
         """
@@ -436,7 +488,7 @@ class WorldModel:
 
     def save(self, db_path: Optional[Path] = None) -> None:
         """
-        Save the world model to SQLite database.
+        Save the world model to SQLite database (synchronous version).
 
         Args:
             db_path: Path to database file. Uses self.db_path if not provided.
@@ -506,6 +558,17 @@ class WorldModel:
 
         conn.commit()
         conn.close()
+
+    async def save_async(self, db_path: Optional[Path] = None) -> None:
+        """
+        Save the world model to SQLite database (async version with locking).
+
+        Args:
+            db_path: Path to database file. Uses self.db_path if not provided.
+        """
+        async with self._db_lock:
+            # Run save in thread pool to avoid blocking
+            await asyncio.to_thread(self.save, db_path)
 
     @classmethod
     def load(cls, db_path: Path) -> "WorldModel":
