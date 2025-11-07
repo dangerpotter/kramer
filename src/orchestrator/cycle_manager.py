@@ -644,21 +644,38 @@ Create 2-4 tasks that would best advance this research objective."""
         """
         Execute all tasks in a cycle using parallel execution.
 
+        Supports dynamic task scheduling - if tasks add new tasks during execution,
+        those will be executed in subsequent waves.
+
         Args:
             cycle: The cycle to execute
         """
-        # Get pending tasks
-        pending_tasks = [t for t in cycle.tasks if t.status == TaskStatus.PENDING]
+        max_waves = 10  # Prevent infinite loops
+        wave_count = 0
 
-        # Execute tasks in parallel
-        await self._execute_tasks_parallel(pending_tasks, cycle)
+        while wave_count < max_waves:
+            # Get pending tasks
+            pending_tasks = [t for t in cycle.tasks if t.status == TaskStatus.PENDING]
 
-        # Check if budget was exceeded during execution
-        if cycle.budget_used > self.max_cycle_budget:
-            cycle.status = TaskStatus.BUDGET_EXCEEDED
-            print(f"⚠️  Cycle budget exceeded: ${cycle.budget_used:.2f} > ${self.max_cycle_budget:.2f}")
-        else:
-            # Mark cycle as completed
+            if not pending_tasks:
+                # No more pending tasks
+                break
+
+            print(f"Executing wave {wave_count + 1} with {len(pending_tasks)} tasks")
+
+            # Execute tasks in parallel
+            await self._execute_tasks_parallel(pending_tasks, cycle)
+
+            wave_count += 1
+
+            # Check if budget was exceeded during execution
+            if cycle.budget_used > self.max_cycle_budget:
+                cycle.status = TaskStatus.BUDGET_EXCEEDED
+                print(f"⚠️  Cycle budget exceeded: ${cycle.budget_used:.2f} > ${self.max_cycle_budget:.2f}")
+                break
+
+        # Mark cycle as completed if not already failed or budget exceeded
+        if cycle.status == TaskStatus.RUNNING:
             cycle.status = TaskStatus.COMPLETED
 
         cycle.completed_at = datetime.utcnow()
@@ -808,6 +825,10 @@ Create 2-4 tasks that would best advance this research objective."""
             cycle.budget_used += result.cost
             self.total_budget_used += result.cost
 
+            # Auto-schedule hypothesis tests if we just generated hypotheses
+            if task.task_type == TaskType.GENERATE_HYPOTHESIS and result.success:
+                await self._schedule_hypothesis_tests(task, result, cycle)
+
         except Exception as e:
             # Handle unexpected errors
             task.status = TaskStatus.FAILED
@@ -824,6 +845,62 @@ Create 2-4 tasks that would best advance this research objective."""
                 del self.active_tasks[task.task_id]
 
         return task.result or {}
+
+    async def _schedule_hypothesis_tests(
+        self,
+        hypothesis_task: Task,
+        result,
+        cycle: Cycle,
+    ) -> None:
+        """
+        Automatically schedule hypothesis tests for newly generated hypotheses.
+
+        Args:
+            hypothesis_task: The completed hypothesis generation task
+            result: TaskResult from hypothesis generation
+            cycle: The current cycle
+        """
+        from src.orchestrator.agent_coordinator import TaskResult
+
+        # Extract hypothesis IDs from result metadata
+        hypothesis_ids = result.metadata.get("hypothesis_ids", [])
+
+        if not hypothesis_ids:
+            print("No new hypotheses generated, skipping test scheduling")
+            return
+
+        print(f"Auto-scheduling tests for {len(hypothesis_ids)} new hypotheses")
+
+        # Get dataset path from original task context if available
+        dataset_path = hypothesis_task.context.get("dataset_path")
+
+        # Schedule a test task for each new hypothesis
+        for hypothesis_id in hypothesis_ids:
+            # Check if we've already hit max tasks for this cycle
+            if len(cycle.tasks) >= cycle.max_tasks:
+                print(f"Cycle max tasks ({cycle.max_tasks}) reached, skipping remaining hypothesis tests")
+                break
+
+            # Create test task
+            test_task = Task(
+                task_id=str(uuid4()),
+                task_type=TaskType.TEST_HYPOTHESIS,
+                status=TaskStatus.PENDING,
+                objective=f"Test hypothesis {hypothesis_id}",
+                context={
+                    "hypothesis_id": hypothesis_id,
+                    "dataset_path": dataset_path,
+                    "test_approaches": ["both"],  # Use both data and literature testing
+                },
+                parent_task_id=hypothesis_task.task_id,
+            )
+
+            # Add task to cycle
+            cycle.tasks.append(test_task)
+            print(f"  → Scheduled TEST_HYPOTHESIS task for {hypothesis_id}")
+
+        # Note: These tasks will be picked up in the next execution wave
+        # since we're in the middle of executing the current wave
 
     def _should_spawn_new_cycle(self, current_cycle: Cycle) -> bool:
         """

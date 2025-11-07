@@ -14,8 +14,9 @@ from typing import Any, Dict, Optional
 
 from src.kramer.data_analysis_agent import AgentConfig, DataAnalysisAgent
 from src.kramer.hypothesis_agent import HypothesisAgent
+from src.kramer.hypothesis_tester_agent import HypothesisTesterAgent
 from src.orchestrator.cycle_manager import Task
-from src.world_model.graph import WorldModel
+from src.world_model.graph import EdgeType, NodeType, WorldModel
 
 # Import LiteratureAgent - try multiple paths as it may be in different locations
 try:
@@ -345,8 +346,6 @@ class AgentCoordinator:
         """
         Execute hypothesis testing task.
 
-        This is a stub for future HypothesisTesterAgent implementation.
-
         Args:
             task: Task object with hypothesis to test
             world_model: World model with data and context
@@ -354,28 +353,169 @@ class AgentCoordinator:
         Returns:
             TaskResult with test results
         """
-        # TODO: Implement actual HypothesisTesterAgent
-        # For now, return a stub result
-        hypothesis = task.context.get("hypothesis", "Unknown hypothesis")
+        try:
+            # Extract test parameters from task context
+            hypothesis_id = task.context.get("hypothesis_id")
+            dataset_path = task.context.get("dataset_path")
+            test_approaches = task.context.get("test_approaches", ["both"])
 
-        return TaskResult(
-            success=True,
-            task_id=task.task_id,
-            task_type=task.task_type.value,
-            findings=[
+            if not hypothesis_id:
+                return TaskResult(
+                    success=False,
+                    task_id=task.task_id,
+                    task_type=task.task_type.value,
+                    findings=[],
+                    cost=0.0,
+                    metadata={},
+                    error="No hypothesis_id provided in task context",
+                )
+
+            # Create HypothesisTesterAgent
+            tester = HypothesisTesterAgent(
+                world_model=world_model,
+                api_key=self.api_key,
+                model="claude-sonnet-4-20250514",
+                use_extended_thinking=True,
+            )
+
+            # Run hypothesis test
+            test_result = tester.test_hypothesis(
+                hypothesis_id=hypothesis_id,
+                dataset_path=dataset_path,
+                test_approaches=test_approaches,
+            )
+
+            # Update world model with test results
+            self._update_world_model_with_test_results(
+                world_model=world_model,
+                test_result=test_result,
+            )
+
+            # Convert to findings format
+            findings = [
                 {
-                    "type": "test_result",
-                    "hypothesis": hypothesis,
-                    "result": "not_tested",
-                    "note": "HypothesisTesterAgent not yet implemented",
-                }
-            ],
-            cost=0.0,
-            metadata={
-                "status": "stub_implementation",
-                "hypothesis": hypothesis,
-            },
-        )
+                    "type": "hypothesis_test_result",
+                    "hypothesis_id": test_result.hypothesis_id,
+                    "outcome": test_result.outcome,
+                    "confidence": test_result.confidence,
+                    "test_type": test_result.test_type,
+                    "reasoning": test_result.reasoning,
+                },
+            ]
+
+            # Add evidence as separate findings
+            for evidence in test_result.evidence:
+                findings.append(
+                    {
+                        "type": "test_evidence",
+                        "evidence_type": evidence.get("type"),
+                        "supports": evidence.get("supports"),
+                        "confidence": evidence.get("confidence", 0.5),
+                        "details": evidence,
+                    }
+                )
+
+            return TaskResult(
+                success=True,
+                task_id=task.task_id,
+                task_type=task.task_type.value,
+                findings=findings,
+                cost=test_result.cost,
+                metadata={
+                    "hypothesis_id": test_result.hypothesis_id,
+                    "outcome": test_result.outcome,
+                    "confidence": test_result.confidence,
+                    "test_type": test_result.test_type,
+                    "statistical_metrics": test_result.statistical_metrics,
+                    "evidence_count": len(test_result.evidence),
+                },
+            )
+
+        except Exception as e:
+            import traceback
+
+            error_msg = f"Error executing hypothesis test: {str(e)}"
+            print(error_msg)
+            print(traceback.format_exc())
+
+            return TaskResult(
+                success=False,
+                task_id=task.task_id,
+                task_type=task.task_type.value,
+                findings=[],
+                cost=0.0,
+                metadata={},
+                error=error_msg,
+            )
+
+    def _update_world_model_with_test_results(
+        self,
+        world_model: WorldModel,
+        test_result,
+    ) -> None:
+        """
+        Update world model with hypothesis test results.
+
+        Args:
+            world_model: World model to update
+            test_result: TestResult from HypothesisTesterAgent
+        """
+        hypothesis_id = test_result.hypothesis_id
+
+        # Update hypothesis node with test outcome
+        if world_model.graph.has_node(hypothesis_id):
+            node_data = world_model.graph.nodes[hypothesis_id]
+            metadata = node_data.get("metadata", {})
+
+            # Update metadata with test results
+            metadata["tested"] = True
+            metadata["test_outcome"] = test_result.outcome
+            metadata["test_confidence"] = test_result.confidence
+            metadata["test_type"] = test_result.test_type
+            metadata["test_reasoning"] = test_result.reasoning
+
+            # Update confidence based on test outcome
+            if test_result.outcome == "supported":
+                # Increase confidence for supported hypotheses
+                new_confidence = min(1.0, test_result.confidence)
+            elif test_result.outcome == "refuted":
+                # Decrease confidence for refuted hypotheses
+                new_confidence = max(0.0, 1.0 - test_result.confidence)
+            else:
+                # Keep original confidence for inconclusive
+                new_confidence = node_data.get("confidence", 0.5)
+
+            # Update node
+            world_model.graph.nodes[hypothesis_id]["confidence"] = new_confidence
+            world_model.graph.nodes[hypothesis_id]["metadata"] = metadata
+
+            # Add evidence findings to world model and link them
+            for evidence in test_result.evidence:
+                if evidence.get("type") in ["statistical_analysis", "literature_review"]:
+                    # Create finding node for evidence
+                    finding_text = evidence.get("finding", evidence.get("reasoning", "Test evidence"))
+
+                    finding_id = world_model.add_finding(
+                        text=finding_text,
+                        confidence=evidence.get("confidence", 0.5),
+                        metadata={
+                            "source": evidence.get("source"),
+                            "evidence_type": evidence.get("type"),
+                            "from_hypothesis_test": hypothesis_id,
+                        },
+                    )
+
+                    # Link evidence to hypothesis
+                    edge_type = EdgeType.SUPPORTS if evidence.get("supports") else EdgeType.REFUTES
+                    try:
+                        world_model.add_edge(
+                            source=finding_id,
+                            target=hypothesis_id,
+                            edge_type=edge_type,
+                            metadata={"test_evidence": True},
+                        )
+                    except Exception as e:
+                        print(f"Warning: Could not add edge from evidence to hypothesis: {e}")
 
     def _extract_world_model_context(
         self,
