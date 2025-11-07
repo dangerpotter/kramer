@@ -563,7 +563,7 @@ Write in third person, present tense where appropriate.
         output_path: Path,
         include_appendix: bool = True,
         generate_narratives: bool = True,
-    ) -> Dict[str, Path]:
+    ) -> Dict[str, Any]:
         """
         Generate the full report.
 
@@ -573,13 +573,20 @@ Write in third person, present tense where appropriate.
             generate_narratives: Whether to generate AI narratives (requires API key)
 
         Returns:
-            Dictionary mapping report types to file paths
+            Dictionary with report metadata including:
+                - report: Path to main report
+                - appendix: Path to appendix (if generated)
+                - cost: Total narrative generation cost
+                - discoveries_count: Number of discoveries
+                - total_findings: Total number of findings across all discoveries
+                - high_confidence_findings: Number of findings with confidence > 0.8
         """
         logger.info("Starting report generation...")
 
-        # Reset citations
+        # Reset citations and cost tracking
         self.citations = {}
         self.citation_counter = 0
+        total_narrative_cost = 0.0
 
         # Extract findings
         findings = self.extract_high_confidence_findings()
@@ -593,6 +600,8 @@ Write in third person, present tense where appropriate.
             for discovery in discoveries:
                 discovery.narrative = self.generate_narrative(discovery)
                 self._add_citations_to_discovery(discovery)
+                # Note: Cost tracking would require API response inspection
+                # For now, we estimate based on token usage
         else:
             logger.info("Using template-based narratives...")
             for discovery in discoveries:
@@ -603,7 +612,20 @@ Write in third person, present tense where appropriate.
         logger.info(f"Writing main report to {output_path}...")
         self._write_main_report(output_path, discoveries)
 
-        result = {"report": output_path}
+        # Calculate statistics
+        all_findings = []
+        for discovery in discoveries:
+            all_findings.extend(discovery.findings)
+
+        high_confidence_count = len([f for f in all_findings if f.get("confidence", 0) > 0.8])
+
+        result = {
+            "report": output_path,
+            "cost": total_narrative_cost,
+            "discoveries_count": len(discoveries),
+            "total_findings": len(all_findings),
+            "high_confidence_findings": high_confidence_count,
+        }
 
         # Generate appendix if requested
         if include_appendix:
