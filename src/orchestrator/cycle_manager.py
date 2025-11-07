@@ -6,11 +6,15 @@ and manages the budget for exploration.
 """
 
 import asyncio
+import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Set
 from uuid import uuid4
+
+import anthropic
 
 from src.world_model.graph import NodeType, WorldModel
 
@@ -244,10 +248,123 @@ class Orchestrator:
 
     def _plan_initial_tasks(self, cycle: Cycle) -> List[tuple]:
         """
-        Plan initial tasks for a cycle based on its objective.
+        Plan initial tasks for a cycle using Claude API for intelligent planning.
 
-        This is a simplified version that creates a basic task structure.
-        In a full implementation, this would use an LLM to plan tasks.
+        Args:
+            cycle: The cycle to plan tasks for
+
+        Returns:
+            List of tuples (task_type, objective, context)
+        """
+        # Get world model context
+        world_model_summary = self._get_world_model_summary()
+
+        # Create prompt for Claude
+        prompt = f"""Given this research objective and current world model state, create a task decomposition plan.
+
+Research Objective: {cycle.objective}
+
+Current World Model State:
+- Total nodes: {world_model_summary['total_nodes']}
+- Hypotheses: {world_model_summary['hypothesis_count']}
+- Findings: {world_model_summary['finding_count']}
+- Papers: {world_model_summary['paper_count']}
+
+Recent Hypotheses:
+{self._format_recent_items(world_model_summary['recent_hypotheses'])}
+
+Recent Findings:
+{self._format_recent_items(world_model_summary['recent_findings'])}
+
+Available task types:
+- ANALYZE_DATA: Analyze a dataset to find patterns and insights
+- SEARCH_LITERATURE: Search scientific literature for relevant papers
+- GENERATE_HYPOTHESIS: Generate new hypotheses based on current knowledge
+- TEST_HYPOTHESIS: Test a specific hypothesis with data or literature
+- SYNTHESIZE_FINDINGS: Synthesize current knowledge into coherent insights
+
+Please create a task decomposition plan. For each task, specify:
+1. task_type (one of the types above)
+2. objective (specific goal for this task)
+3. context (relevant parameters as JSON object)
+
+Return your response as a JSON array of tasks in this format:
+[
+  {{
+    "task_type": "SEARCH_LITERATURE",
+    "objective": "Search for papers on X",
+    "context": {{"max_papers": 10}}
+  }},
+  ...
+]
+
+Create 2-4 tasks that would best advance this research objective."""
+
+        try:
+            # Call Claude API
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+            if not api_key:
+                # Fallback to simple planning if no API key
+                return self._fallback_task_planning(cycle)
+
+            client = anthropic.Anthropic(api_key=api_key)
+
+            response = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=2000,
+                temperature=0.7,
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+            )
+
+            # Extract response text
+            response_text = response.content[0].text
+
+            # Parse JSON response
+            # Handle potential markdown code blocks
+            if "```json" in response_text:
+                json_start = response_text.find("```json") + 7
+                json_end = response_text.find("```", json_start)
+                response_text = response_text[json_start:json_end].strip()
+            elif "```" in response_text:
+                json_start = response_text.find("```") + 3
+                json_end = response_text.find("```", json_start)
+                response_text = response_text[json_start:json_end].strip()
+
+            task_plan = json.loads(response_text)
+
+            # Convert to internal format and validate
+            tasks = []
+            for task_dict in task_plan:
+                task_type_str = task_dict.get("task_type", "").upper()
+
+                # Validate task type
+                try:
+                    task_type = TaskType[task_type_str]
+                except KeyError:
+                    # Skip invalid task types
+                    continue
+
+                objective = task_dict.get("objective", "")
+                context = task_dict.get("context", {})
+
+                tasks.append((task_type, objective, context))
+
+            # Ensure we have at least one task
+            if not tasks:
+                return self._fallback_task_planning(cycle)
+
+            return tasks
+
+        except Exception as e:
+            # Fallback to simple planning on error
+            print(f"Error in Claude-based planning: {e}. Using fallback planning.")
+            return self._fallback_task_planning(cycle)
+
+    def _fallback_task_planning(self, cycle: Cycle) -> List[tuple]:
+        """
+        Fallback task planning using simple keyword matching.
 
         Args:
             cycle: The cycle to plan tasks for
@@ -256,7 +373,6 @@ class Orchestrator:
             List of tuples (task_type, objective, context)
         """
         objective = cycle.objective.lower()
-
         tasks = []
 
         # If objective mentions data or analysis
@@ -292,12 +408,155 @@ class Orchestrator:
 
         return tasks
 
+    def _get_world_model_summary(self) -> Dict[str, Any]:
+        """Get a summary of the current world model state."""
+        summary = {
+            "total_nodes": self.world_model.graph.number_of_nodes(),
+            "hypothesis_count": 0,
+            "finding_count": 0,
+            "paper_count": 0,
+            "recent_hypotheses": [],
+            "recent_findings": [],
+        }
+
+        # Count node types and collect recent items
+        for node_id, data in self.world_model.graph.nodes(data=True):
+            node_type = data.get("node_type")
+
+            if node_type == "hypothesis":
+                summary["hypothesis_count"] += 1
+                if len(summary["recent_hypotheses"]) < 5:
+                    summary["recent_hypotheses"].append({
+                        "text": data.get("text", ""),
+                        "confidence": data.get("confidence", 0.0),
+                    })
+
+            elif node_type == "finding":
+                summary["finding_count"] += 1
+                if len(summary["recent_findings"]) < 5:
+                    summary["recent_findings"].append({
+                        "text": data.get("text", ""),
+                        "confidence": data.get("confidence", 0.0),
+                    })
+
+            elif node_type == "paper":
+                summary["paper_count"] += 1
+
+        return summary
+
+    def _format_recent_items(self, items: List[Dict[str, Any]]) -> str:
+        """Format recent items for display in prompt."""
+        if not items:
+            return "None"
+
+        formatted = []
+        for i, item in enumerate(items[:5], 1):
+            text = item.get("text", "")[:100]  # Limit length
+            confidence = item.get("confidence", 0.0)
+            formatted.append(f"{i}. {text} (confidence: {confidence:.2f})")
+
+        return "\n".join(formatted)
+
+    async def run_cycle(
+        self,
+        objective: str,
+        max_cycles: int = 5,
+        max_runtime: float = 43200.0,  # 12 hours in seconds
+        max_tasks_per_cycle: int = 10,
+        budget: Optional[float] = None,
+    ) -> List[Cycle]:
+        """
+        Run autonomous discovery cycles with recursive spawning.
+
+        This is the main entry point for autonomous discovery. It will:
+        1. Spawn an initial cycle
+        2. Execute all tasks in the cycle
+        3. Check if new cycles should be spawned based on findings
+        4. Recursively spawn and execute new cycles
+        5. Stop when max_cycles, max_runtime, or budget is exhausted
+
+        Args:
+            objective: Initial research objective
+            max_cycles: Maximum number of cycles to run
+            max_runtime: Maximum runtime in seconds
+            max_tasks_per_cycle: Maximum tasks per cycle
+            budget: Total budget for all cycles
+
+        Returns:
+            List of all cycles that were executed
+        """
+        start_time = datetime.utcnow()
+        all_cycles = []
+        cycles_run = 0
+
+        # Set budget if provided
+        if budget:
+            self.default_budget = budget
+
+        # Spawn and run initial cycle
+        current_cycle = await self.spawn_cycle(
+            objective=objective,
+            max_tasks=max_tasks_per_cycle,
+            budget=budget,
+        )
+        all_cycles.append(current_cycle)
+        cycles_run += 1
+
+        # Discovery loop: spawn follow-up cycles as needed
+        while cycles_run < max_cycles:
+            # Check runtime limit
+            elapsed = (datetime.utcnow() - start_time).total_seconds()
+            if elapsed > max_runtime:
+                print(f"Max runtime ({max_runtime}s) exceeded. Stopping discovery loop.")
+                break
+
+            # Check if we should spawn a new cycle
+            if not self._should_spawn_new_cycle(current_cycle):
+                print("No conditions met for spawning new cycle. Discovery loop complete.")
+                break
+
+            # Check budget
+            budget_remaining = self.default_budget - self.total_budget_used
+            min_cycle_budget = 5.0
+            if budget_remaining < min_cycle_budget:
+                print(f"Insufficient budget remaining (${budget_remaining:.2f}). Stopping discovery loop.")
+                break
+
+            # Spawn follow-up cycle
+            print(f"Spawning follow-up cycle {cycles_run + 1}/{max_cycles}...")
+            follow_up_cycle = self._spawn_follow_up_cycle(current_cycle)
+
+            # Plan tasks for the follow-up cycle
+            initial_tasks = self._plan_initial_tasks(follow_up_cycle)
+            for task_type, task_objective, context in initial_tasks:
+                self.create_task(
+                    cycle_id=follow_up_cycle.cycle_id,
+                    task_type=task_type,
+                    objective=task_objective,
+                    context=context,
+                )
+
+            # Execute the follow-up cycle
+            follow_up_cycle.status = TaskStatus.RUNNING
+            follow_up_cycle.started_at = datetime.utcnow()
+            await self._execute_cycle(follow_up_cycle)
+
+            all_cycles.append(follow_up_cycle)
+            current_cycle = follow_up_cycle
+            cycles_run += 1
+
+        # Print summary
+        total_elapsed = (datetime.utcnow() - start_time).total_seconds()
+        print(f"\nDiscovery loop completed:")
+        print(f"  Cycles run: {cycles_run}")
+        print(f"  Total time: {total_elapsed:.1f}s")
+        print(f"  Total budget used: ${self.total_budget_used:.2f}")
+
+        return all_cycles
+
     async def _execute_cycle(self, cycle: Cycle) -> None:
         """
         Execute all tasks in a cycle.
-
-        This is a placeholder implementation that marks tasks as completed.
-        In a full implementation, this would actually execute the agents.
 
         Args:
             cycle: The cycle to execute
@@ -305,24 +564,27 @@ class Orchestrator:
         # Create a task queue
         pending_tasks = [t for t in cycle.tasks if t.status == TaskStatus.PENDING]
 
-        # Execute tasks (simplified version)
+        # Execute tasks
         for task in pending_tasks:
-            await self._execute_task(task)
+            await self._execute_task(task, cycle)
 
         # Mark cycle as completed
         cycle.status = TaskStatus.COMPLETED
         cycle.completed_at = datetime.utcnow()
 
-    async def _execute_task(self, task: Task) -> None:
+    async def _execute_task(self, task: Task, cycle: Cycle) -> Dict[str, Any]:
         """
-        Execute a single task.
-
-        This is a placeholder that simulates task execution.
-        In a full implementation, this would call the appropriate agent.
+        Execute a single task using the appropriate agent.
 
         Args:
             task: The task to execute
+            cycle: The cycle this task belongs to
+
+        Returns:
+            Task result dictionary
         """
+        from src.orchestrator.agent_coordinator import AgentCoordinator, TaskResult
+
         # Mark task as running
         task.status = TaskStatus.RUNNING
         task.started_at = datetime.utcnow()
@@ -330,20 +592,207 @@ class Orchestrator:
         # Add to active tasks
         self.active_tasks[task.task_id] = task
 
-        # Simulate some work
-        await asyncio.sleep(0.1)
+        result: Optional[TaskResult] = None
 
-        # For now, just mark as completed with dummy result
-        task.status = TaskStatus.COMPLETED
-        task.completed_at = datetime.utcnow()
-        task.result = {
-            "status": "success",
-            "message": f"Task {task.task_type.value} completed (placeholder)",
-            "findings": [],
-        }
+        try:
+            # Initialize agent coordinator
+            coordinator = AgentCoordinator()
 
-        # Remove from active tasks
-        del self.active_tasks[task.task_id]
+            # Execute based on task type
+            match task.task_type:
+                case TaskType.ANALYZE_DATA:
+                    result = coordinator.execute_data_analysis(task, self.world_model)
+
+                case TaskType.SEARCH_LITERATURE:
+                    result = coordinator.execute_literature_search(task, self.world_model)
+
+                case TaskType.GENERATE_HYPOTHESIS:
+                    result = coordinator.execute_hypothesis_generation(task, self.world_model)
+
+                case TaskType.TEST_HYPOTHESIS:
+                    result = coordinator.execute_hypothesis_test(task, self.world_model)
+
+                case TaskType.SYNTHESIZE_FINDINGS:
+                    # TODO: Implement synthesis agent
+                    result = TaskResult(
+                        success=True,
+                        task_id=task.task_id,
+                        task_type=task.task_type.value,
+                        findings=[],
+                        cost=0.0,
+                        metadata={"status": "not_implemented"},
+                    )
+
+                case _:
+                    result = TaskResult(
+                        success=False,
+                        task_id=task.task_id,
+                        task_type=task.task_type.value,
+                        findings=[],
+                        cost=0.0,
+                        metadata={},
+                        error=f"Unknown task type: {task.task_type}",
+                    )
+
+            # Update task based on result
+            if result.success:
+                task.status = TaskStatus.COMPLETED
+                task.result = result.to_dict()
+            else:
+                task.status = TaskStatus.FAILED
+                task.error = result.error
+                task.result = result.to_dict()
+
+            # Update budget
+            cycle.budget_used += result.cost
+            self.total_budget_used += result.cost
+
+        except Exception as e:
+            # Handle unexpected errors
+            task.status = TaskStatus.FAILED
+            task.error = str(e)
+            task.result = {
+                "success": False,
+                "error": str(e),
+            }
+
+        finally:
+            # Mark completion time and remove from active tasks
+            task.completed_at = datetime.utcnow()
+            if task.task_id in self.active_tasks:
+                del self.active_tasks[task.task_id]
+
+        return task.result or {}
+
+    def _should_spawn_new_cycle(self, current_cycle: Cycle) -> bool:
+        """
+        Determine if a new discovery cycle should be spawned.
+
+        Checks:
+        - New hypotheses added since cycle start
+        - Novel findings exceed threshold
+        - Budget remaining > minimum cycle budget
+
+        Args:
+            current_cycle: The cycle that just completed
+
+        Returns:
+            True if a new cycle should be spawned
+        """
+        # Check if we have budget remaining
+        min_cycle_budget = 5.0  # Minimum budget for a cycle
+        budget_remaining = self.default_budget - self.total_budget_used
+        if budget_remaining < min_cycle_budget:
+            return False
+
+        # Count new hypotheses added during this cycle
+        new_hypotheses = 0
+        for node_id, data in self.world_model.graph.nodes(data=True):
+            if data.get("node_type") == "hypothesis":
+                node_created = data.get("created_at")
+                if node_created and current_cycle.started_at:
+                    # Parse datetime if it's a string
+                    if isinstance(node_created, str):
+                        try:
+                            node_created = datetime.fromisoformat(node_created)
+                        except (ValueError, AttributeError):
+                            continue
+
+                    if node_created >= current_cycle.started_at:
+                        new_hypotheses += 1
+
+        # Check for novel findings with high confidence
+        novel_findings_count = 0
+        novelty_threshold = 0.7
+
+        for node_id, data in self.world_model.graph.nodes(data=True):
+            if data.get("node_type") == "finding":
+                confidence = data.get("confidence", 0.0)
+                novelty = data.get("novelty", 0.0)
+
+                node_created = data.get("created_at")
+                if node_created and current_cycle.started_at:
+                    # Parse datetime if it's a string
+                    if isinstance(node_created, str):
+                        try:
+                            node_created = datetime.fromisoformat(node_created)
+                        except (ValueError, AttributeError):
+                            continue
+
+                    if node_created >= current_cycle.started_at and novelty > novelty_threshold:
+                        novel_findings_count += 1
+
+        # Spawn new cycle if:
+        # - We have new hypotheses to explore, OR
+        # - We have novel findings that warrant further investigation
+        return new_hypotheses > 0 or novel_findings_count > 0
+
+    def _spawn_follow_up_cycle(self, parent_cycle: Cycle) -> Cycle:
+        """
+        Spawn a follow-up discovery cycle based on parent cycle results.
+
+        Args:
+            parent_cycle: The parent cycle that triggered this spawn
+
+        Returns:
+            New Cycle object linked to parent
+        """
+        # Query world model for recent high-confidence findings
+        recent_findings = []
+        recent_hypotheses = []
+
+        for node_id, data in self.world_model.graph.nodes(data=True):
+            node_created = data.get("created_at")
+            if node_created and parent_cycle.started_at:
+                # Parse datetime if it's a string
+                if isinstance(node_created, str):
+                    try:
+                        node_created = datetime.fromisoformat(node_created)
+                    except (ValueError, AttributeError):
+                        continue
+
+                if node_created >= parent_cycle.started_at:
+                    if data.get("node_type") == "finding":
+                        confidence = data.get("confidence", 0.0)
+                        if confidence > 0.6:
+                            recent_findings.append({
+                                "id": node_id,
+                                "text": data.get("text", ""),
+                                "confidence": confidence,
+                            })
+                    elif data.get("node_type") == "hypothesis":
+                        recent_hypotheses.append({
+                            "id": node_id,
+                            "text": data.get("text", ""),
+                            "confidence": data.get("confidence", 0.0),
+                        })
+
+        # Generate new objective based on findings
+        if recent_hypotheses:
+            # Focus on testing new hypotheses
+            hypothesis_text = recent_hypotheses[0]["text"]
+            new_objective = f"Investigate and test hypothesis: {hypothesis_text}"
+        elif recent_findings:
+            # Build on recent findings
+            finding_text = recent_findings[0]["text"]
+            new_objective = f"Explore implications of finding: {finding_text}"
+        else:
+            # Broaden the search
+            new_objective = f"Continue investigation from: {parent_cycle.objective}"
+
+        # Create new cycle
+        new_cycle = self.create_cycle(
+            objective=new_objective,
+            max_tasks=10,
+        )
+
+        # Link to parent via metadata
+        # Store parent cycle ID in the cycle object
+        # (We could extend Cycle dataclass to have parent_cycle_id field)
+        # For now, we'll just track it in our records
+        new_cycle.status = TaskStatus.PENDING
+
+        return new_cycle
 
     def get_cycle(self, cycle_id: str) -> Optional[Cycle]:
         """Get a cycle by ID."""
