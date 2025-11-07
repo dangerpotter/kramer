@@ -12,6 +12,7 @@ import anthropic
 from kramer.code_executor import CodeExecutor, ExecutionResult
 from kramer.result_parser import ResultParser, AnalysisResults
 from kramer.notebook_manager import NotebookManager
+from src.utils.cost_tracker import CostTracker
 
 
 @dataclass
@@ -91,6 +92,7 @@ class DataAnalysisAgent:
         # Analysis state
         self.current_trajectory: List[AnalysisStep] = []
         self.world_model_context: Dict[str, Any] = {}
+        self.total_cost: float = 0.0  # Track total API costs
 
     def analyze(
         self,
@@ -227,6 +229,7 @@ Error: `{execution_result.error}`
             "success": all(
                 step.execution_result.success for step in self.current_trajectory
             ),
+            "cost": self.total_cost,
         }
 
     def _generate_analysis_code(
@@ -275,6 +278,10 @@ Error: `{execution_result.error}`
                 }
 
             response = self.client.messages.create(**kwargs)
+
+            # Track API cost
+            cost = CostTracker.track_call(self.config.model, response)
+            self.total_cost += cost
 
             # Extract code and thinking
             code = ""

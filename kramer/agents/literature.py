@@ -7,6 +7,7 @@ import anthropic
 
 from kramer.world_model import WorldModel, Finding, Node, NodeType
 from kramer.api_clients.semantic_scholar import SemanticScholarClient, PaperMetadata
+from src.utils.cost_tracker import CostTracker
 
 
 @dataclass
@@ -52,6 +53,7 @@ class LiteratureAgent:
         self.anthropic_client = anthropic.Anthropic(api_key=anthropic_api_key)
         self.ss_client = SemanticScholarClient(api_key=semantic_scholar_api_key)
         self.model = model
+        self.total_cost: float = 0.0  # Track total API costs
 
     async def __aenter__(self):
         await self.ss_client.__aenter__()
@@ -65,7 +67,7 @@ class LiteratureAgent:
         query: str,
         max_papers: int = 10,
         hypotheses: Optional[List[str]] = None
-    ) -> List[ExtractedClaim]:
+    ) -> Dict[str, Any]:
         """
         Search for papers and extract claims.
 
@@ -75,7 +77,10 @@ class LiteratureAgent:
             hypotheses: Optional list of current hypotheses to consider
 
         Returns:
-            List of extracted claims with full citations
+            Dictionary with:
+                - papers: List of paper metadata
+                - claims: List of extracted claims with full citations
+                - cost: Total API cost in dollars
         """
         # Step 1: Search for papers
         print(f"Searching for papers on: {query}")
@@ -84,7 +89,11 @@ class LiteratureAgent:
 
         if not papers:
             print("No papers found")
-            return []
+            return {
+                "papers": [],
+                "claims": [],
+                "cost": self.total_cost,
+            }
 
         # Step 2: Process each paper
         all_claims = []
@@ -135,7 +144,11 @@ class LiteratureAgent:
         print(f"\n✓ Total claims extracted: {len(all_claims)}")
         print(f"✓ World model: {self.world_model.summary()}")
 
-        return all_claims
+        return {
+            "papers": papers,
+            "claims": all_claims,
+            "cost": self.total_cost,
+        }
 
     def _add_paper_to_world_model(self, paper: PaperMetadata) -> Node:
         """Add a paper to the world model as a node."""
@@ -177,6 +190,10 @@ class LiteratureAgent:
             temperature=0,
             messages=[{"role": "user", "content": prompt}]
         )
+
+        # Track API cost
+        cost = CostTracker.track_call(self.model, response)
+        self.total_cost += cost
 
         # Parse response
         response_text = response.content[0].text

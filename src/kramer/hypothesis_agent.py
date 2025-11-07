@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 import anthropic
 
 from src.world_model.graph import EdgeType, NodeType, WorldModel
+from src.utils.cost_tracker import CostTracker
 
 
 @dataclass
@@ -520,24 +521,12 @@ Respond ONLY with the JSON array, no additional text before or after.
 
     def _estimate_cost(self, response: anthropic.types.Message) -> float:
         """
-        Estimate API cost based on token usage.
+        Calculate API cost based on token usage using CostTracker.
 
         Args:
             response: Anthropic API response
 
         Returns:
-            Estimated cost in dollars
+            Cost in dollars
         """
-        # Extract token usage from response
-        usage = response.usage
-
-        # Claude Sonnet 4 pricing (as of early 2025)
-        # Input: $3 per million tokens
-        # Output: $15 per million tokens
-        input_tokens = usage.input_tokens
-        output_tokens = usage.output_tokens
-
-        input_cost = (input_tokens / 1_000_000) * 3.0
-        output_cost = (output_tokens / 1_000_000) * 15.0
-
-        return input_cost + output_cost
+        return CostTracker.track_call(self.model, response)

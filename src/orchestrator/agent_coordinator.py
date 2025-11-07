@@ -141,16 +141,15 @@ class AgentCoordinator:
             # Extract findings
             findings = result.get("findings", [])
 
-            # Calculate cost (rough estimate based on tokens)
-            # TODO: Get actual cost from agent
-            estimated_cost = 0.05  # Placeholder
+            # Extract actual cost from agent
+            actual_cost = result.get("cost", 0.0)
 
             return TaskResult(
                 success=True,
                 task_id=task.task_id,
                 task_type=task.task_type.value,
                 findings=findings,
-                cost=estimated_cost,
+                cost=actual_cost,
                 metadata={
                     "notebook_path": result.get("notebook_path"),
                     "steps": len(result.get("steps", [])),
@@ -240,12 +239,15 @@ class AgentCoordinator:
                     }
                 )
 
+            # Extract cost from result (if available)
+            actual_cost = result.get("cost", 0.0)
+
             return TaskResult(
                 success=True,
                 task_id=task.task_id,
                 task_type=task.task_type.value,
                 findings=findings,
-                cost=0.0,  # Mock agent, no cost
+                cost=actual_cost,
                 metadata={
                     "papers_found": len(result.get("papers", [])),
                     "query": task.objective,
