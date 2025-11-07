@@ -1205,44 +1205,319 @@ Create 2-4 tasks that would best advance this research objective."""
 
         return findings_per_cycle
 
+    def _summarize_findings(self, max_findings: int = 20) -> str:
+        """
+        Summarize recent high-confidence findings for LLM assessment.
+
+        Args:
+            max_findings: Maximum number of findings to include
+
+        Returns:
+            Formatted string of findings
+        """
+        # Get all findings from world model
+        all_findings = []
+        for node_id, data in self.world_model.graph.nodes(data=True):
+            if data.get("node_type") == NodeType.FINDING.value:
+                all_findings.append({
+                    "text": data.get("text", ""),
+                    "confidence": data.get("confidence", 0.0),
+                    "created_at": data.get("created_at", ""),
+                })
+
+        # Sort by confidence and recency
+        all_findings.sort(
+            key=lambda f: (f["confidence"], f["created_at"]),
+            reverse=True
+        )
+
+        # Take top findings
+        top_findings = all_findings[:max_findings]
+
+        # Format for LLM
+        if not top_findings:
+            return "No findings yet."
+
+        formatted = []
+        for i, finding in enumerate(top_findings, 1):
+            formatted.append(
+                f"{i}. {finding['text']} (confidence: {finding['confidence']:.2f})"
+            )
+
+        return "\n".join(formatted)
+
+    def _assess_objective_with_llm(self) -> Dict[str, Any]:
+        """
+        Use Claude to assess objective completion.
+
+        Returns:
+            Dictionary with completion_score (0.0-1.0) and reasoning
+        """
+        # Get the objective from the first cycle (they're all related)
+        objective = "Research objective not specified"
+        if self.cycles:
+            first_cycle = list(self.cycles.values())[0]
+            objective = first_cycle.objective
+
+        # Get findings summary
+        findings_summary = self._summarize_findings()
+
+        # Get world model stats
+        stats = self.world_model.get_stats()
+
+        # Construct prompt for Claude
+        prompt = f"""Research Objective: {objective}
+
+Current Findings:
+{findings_summary}
+
+World Model Statistics:
+- Total nodes: {stats['total_nodes']}
+- Total findings: {stats['node_types'].get('finding', 0)}
+- Total hypotheses: {stats['node_types'].get('hypothesis', 0)}
+- Total papers: {stats['node_types'].get('paper', 0)}
+
+On a scale of 0.0 to 1.0, how well have we addressed this research objective?
+
+Consider:
+- Coverage of key aspects of the objective
+- Quality and confidence of evidence
+- Novel insights discovered
+- Remaining questions or gaps
+
+Respond with JSON in this exact format:
+{{"completion_score": 0.0, "reasoning": "explanation here"}}"""
+
+        try:
+            # Call Claude API
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+            if not api_key:
+                print("⚠️  No ANTHROPIC_API_KEY found, skipping LLM assessment")
+                return {
+                    "completion_score": 0.0,
+                    "reasoning": "API key not available",
+                    "error": "No API key"
+                }
+
+            client = anthropic.Anthropic(api_key=api_key)
+
+            response = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=1000,
+                temperature=0.3,  # Lower temperature for more consistent scoring
+                messages=[
+                    {"role": "user", "content": prompt}
+                ],
+            )
+
+            # Extract response text
+            response_text = response.content[0].text
+
+            # Parse JSON response
+            # Handle potential markdown code blocks
+            if "```json" in response_text:
+                json_start = response_text.find("```json") + 7
+                json_end = response_text.find("```", json_start)
+                response_text = response_text[json_start:json_end].strip()
+            elif "```" in response_text:
+                json_start = response_text.find("```") + 3
+                json_end = response_text.find("```", json_start)
+                response_text = response_text[json_start:json_end].strip()
+
+            result = json.loads(response_text)
+
+            # Validate result
+            if "completion_score" not in result:
+                return {
+                    "completion_score": 0.0,
+                    "reasoning": "Invalid response format",
+                    "error": "Missing completion_score"
+                }
+
+            # Ensure score is in valid range
+            score = float(result["completion_score"])
+            score = max(0.0, min(1.0, score))
+
+            return {
+                "completion_score": score,
+                "reasoning": result.get("reasoning", "No reasoning provided")
+            }
+
+        except Exception as e:
+            print(f"⚠️  Error in LLM assessment: {e}")
+            return {
+                "completion_score": 0.0,
+                "reasoning": f"Error during assessment: {str(e)}",
+                "error": str(e)
+            }
+
+    def _compute_completion_heuristics(self) -> Dict[str, Any]:
+        """
+        Calculate objective completion metrics using heuristics.
+
+        Returns:
+            Dictionary with various completion metrics
+        """
+        # Get all findings and hypotheses
+        all_findings = []
+        all_hypotheses = []
+        high_confidence_findings = []
+
+        for node_id, data in self.world_model.graph.nodes(data=True):
+            node_type = data.get("node_type")
+            confidence = data.get("confidence", 0.0)
+
+            if node_type == NodeType.FINDING.value:
+                all_findings.append({
+                    "id": node_id,
+                    "confidence": confidence,
+                    "novelty": data.get("metadata", {}).get("novelty", 0.5),
+                })
+                if confidence > 0.7:
+                    high_confidence_findings.append(node_id)
+
+            elif node_type == NodeType.HYPOTHESIS.value:
+                # Check if hypothesis is tested (has incoming support/refute edges)
+                is_tested = False
+                for _, _, edge_data in self.world_model.graph.in_edges(node_id, data=True):
+                    edge_type = edge_data.get("edge_type")
+                    if edge_type in ["supports", "refutes"]:
+                        is_tested = True
+                        break
+
+                all_hypotheses.append({
+                    "id": node_id,
+                    "is_tested": is_tested,
+                })
+
+        # Calculate metrics
+        total_hypotheses = len(all_hypotheses)
+        tested_hypotheses = sum(1 for h in all_hypotheses if h["is_tested"])
+
+        hypothesis_validation_rate = (
+            tested_hypotheses / total_hypotheses if total_hypotheses > 0 else 0.0
+        )
+
+        # Calculate novelty score (average across all findings)
+        novelty_scores = [f["novelty"] for f in all_findings]
+        novelty_score = sum(novelty_scores) / len(novelty_scores) if novelty_scores else 0.0
+
+        # Calculate diminishing returns
+        findings_rate = self._compute_findings_rate()
+        if len(findings_rate) >= 2:
+            recent_rate = findings_rate[-1]
+            historical_avg = sum(findings_rate[:-1]) / len(findings_rate[:-1])
+            diminishing_returns = recent_rate < 0.5 * historical_avg if historical_avg > 0 else False
+        else:
+            diminishing_returns = False
+
+        # Estimate world model coverage
+        # This is a rough estimate based on number of nodes and relationships
+        total_nodes = self.world_model.graph.number_of_nodes()
+        total_edges = self.world_model.graph.number_of_edges()
+
+        # Heuristic: well-connected graph suggests good coverage
+        # Average degree (connections per node)
+        avg_degree = (2 * total_edges / total_nodes) if total_nodes > 0 else 0
+        # Normalize to 0-1 scale (assume 5+ connections per node is excellent coverage)
+        world_model_coverage = min(1.0, avg_degree / 5.0)
+
+        return {
+            "findings_count": len(high_confidence_findings),
+            "total_findings": len(all_findings),
+            "hypothesis_validation_rate": hypothesis_validation_rate,
+            "total_hypotheses": total_hypotheses,
+            "tested_hypotheses": tested_hypotheses,
+            "novelty_score": novelty_score,
+            "diminishing_returns": diminishing_returns,
+            "world_model_coverage": world_model_coverage,
+            "total_nodes": total_nodes,
+            "findings_rate_history": findings_rate,
+        }
+
     def _check_objective_completion(self) -> bool:
         """
-        Check if research objective is complete.
+        Check if research objective is complete using combined LLM and heuristic approach.
+
+        Uses three methods:
+        1. LLM-based assessment for semantic understanding
+        2. Heuristic-based metrics for objective measures
+        3. Combined decision logic
 
         Returns:
             True if objective appears to be complete
         """
-        # Get recent findings (last 3 cycles)
-        recent_findings = self._get_recent_findings(num_cycles=3)
+        print("\n" + "="*60)
+        print("OBJECTIVE COMPLETION CHECK")
+        print("="*60)
 
-        if not recent_findings:
-            return False
+        # Method 1: Compute heuristics
+        print("\n📊 Computing heuristics...")
+        heuristics = self._compute_completion_heuristics()
 
-        # Count high-confidence findings
-        high_conf = [f for f in recent_findings if f["confidence"] > self.synthesis_threshold]
+        print(f"  • High-confidence findings: {heuristics['findings_count']}")
+        print(f"  • Total findings: {heuristics['total_findings']}")
+        print(f"  • Hypothesis validation rate: {heuristics['hypothesis_validation_rate']:.1%}")
+        print(f"  • Tested hypotheses: {heuristics['tested_hypotheses']}/{heuristics['total_hypotheses']}")
+        print(f"  • Novelty score: {heuristics['novelty_score']:.2f}")
+        print(f"  • World model coverage: {heuristics['world_model_coverage']:.2f}")
+        print(f"  • Diminishing returns: {'Yes' if heuristics['diminishing_returns'] else 'No'}")
 
-        # Need at least 5 quality findings
-        if len(high_conf) < 5:
-            return False
+        # Method 2: LLM assessment
+        print("\n🤖 Assessing with LLM...")
+        llm_assessment = self._assess_objective_with_llm()
 
-        # Check diminishing returns (new findings declining)
-        findings_rate = self._compute_findings_rate()
+        if "error" not in llm_assessment:
+            print(f"  • Completion score: {llm_assessment['completion_score']:.2f}")
+            print(f"  • Reasoning: {llm_assessment['reasoning'][:100]}...")
+        else:
+            print(f"  ⚠️  LLM assessment failed: {llm_assessment.get('error')}")
 
-        if len(findings_rate) < 2:
-            return False  # Not enough data to determine trend
+        # Method 3: Combined decision logic
+        print("\n⚖️  Combined assessment...")
 
-        # Check if findings rate is declining (plateauing)
-        recent_rate = findings_rate[-1]
-        avg_rate = sum(findings_rate) / len(findings_rate) if findings_rate else 0
+        llm_score = llm_assessment.get("completion_score", 0.0)
+        has_llm = "error" not in llm_assessment
 
-        if avg_rate == 0:
-            return False
+        # Decision criteria
+        completion_criteria = []
 
-        # If recent rate is less than 50% of average, we're plateauing
-        if recent_rate < 0.5 * avg_rate:
-            return True
+        # Criterion 1: LLM confidence + heuristics support
+        if has_llm and llm_score > 0.8 and heuristics["findings_count"] >= 5:
+            completion_criteria.append("LLM high confidence + sufficient findings")
 
-        return False
+        # Criterion 2: Strong heuristics indicate completion
+        if (heuristics["hypothesis_validation_rate"] > 0.9 and
+            heuristics["diminishing_returns"] and
+            heuristics["findings_count"] >= 5):
+            completion_criteria.append("High validation rate + diminishing returns")
+
+        # Criterion 3: Comprehensive coverage with quality findings
+        if (heuristics["world_model_coverage"] > 0.7 and
+            heuristics["findings_count"] >= 8 and
+            heuristics["novelty_score"] > 0.6):
+            completion_criteria.append("Comprehensive coverage + quality findings")
+
+        # Criterion 4: LLM moderate confidence + very strong heuristics
+        if (has_llm and llm_score > 0.7 and
+            heuristics["hypothesis_validation_rate"] > 0.85 and
+            heuristics["findings_count"] >= 7):
+            completion_criteria.append("LLM moderate confidence + strong heuristics")
+
+        # Make decision
+        is_complete = len(completion_criteria) > 0
+
+        print(f"\n{'✅' if is_complete else '❌'} Decision: {'OBJECTIVE COMPLETE' if is_complete else 'Continue research'}")
+        if completion_criteria:
+            print("  Criteria met:")
+            for criterion in completion_criteria:
+                print(f"    • {criterion}")
+        else:
+            print("  No completion criteria met yet")
+
+        print("="*60 + "\n")
+
+        return is_complete
 
     def _should_trigger_synthesis(self, current_cycle_num: int) -> bool:
         """
