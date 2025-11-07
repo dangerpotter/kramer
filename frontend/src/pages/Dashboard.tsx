@@ -3,6 +3,9 @@ import { useDiscovery, useDiscoveryMetrics, useStopDiscovery } from '@/hooks/use
 import { useWebSocket } from '@/hooks/useWebSocket'
 import Card from '@/components/common/Card'
 import Loading from '@/components/common/Loading'
+import CostChart from '@/components/dashboard/CostChart'
+import CycleTimeline from '@/components/dashboard/CycleTimeline'
+import TaskBreakdown from '@/components/dashboard/TaskBreakdown'
 import { Activity, DollarSign, FileSearch, FlaskConical, StopCircle } from 'lucide-react'
 
 export default function Dashboard() {
@@ -80,6 +83,14 @@ export default function Dashboard() {
           color="orange"
         />
       </div>
+
+      {/* Charts Section */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <CostChart data={metrics?.cost_history || []} />
+        <CycleTimeline cycles={metrics?.cycles || []} />
+      </div>
+
+      <TaskBreakdown tasks={metrics?.tasks || []} />
 
       {/* Live Feed */}
       <Card title="Live Activity Feed" subtitle="Real-time updates from the discovery process">
