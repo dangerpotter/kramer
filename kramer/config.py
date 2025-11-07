@@ -25,6 +25,14 @@ class Config:
     output_dir: str = "output"
     save_world_model: bool = True
 
+    # RAG (Retrieval Augmented Generation) settings
+    use_full_text: bool = True
+    max_papers_to_process: int = 20
+    rag_persist_dir: str = "data/rag_db"
+    embedding_model: str = "all-MiniLM-L6-v2"
+    chunk_size: int = 500
+    chunk_overlap: int = 50
+
 
 def setup_logging(config: Config):
     """Setup logging configuration"""

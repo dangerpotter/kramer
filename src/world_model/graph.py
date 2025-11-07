@@ -328,6 +328,12 @@ class WorldModel:
         if doi:
             meta["doi"] = doi
 
+        # Initialize full-text tracking fields
+        if "has_full_text" not in meta:
+            meta["has_full_text"] = False
+        if "rag_paper_id" not in meta:
+            meta["rag_paper_id"] = None
+
         return self.add_node(
             node_type=NodeType.PAPER,
             text=text,
@@ -432,6 +438,38 @@ class WorldModel:
                     neighbors.append(self.get_node(source))
 
         return [n for n in neighbors if n is not None]
+
+    def mark_paper_processed(
+        self,
+        node_id: str,
+        rag_paper_id: str
+    ) -> None:
+        """
+        Mark a paper as having full-text processed in RAG.
+
+        Args:
+            node_id: The node ID of the paper
+            rag_paper_id: The ID used in the RAG system for this paper
+
+        Raises:
+            ValueError: If node doesn't exist or is not a paper
+        """
+        if node_id not in self.graph:
+            raise ValueError(f"Node {node_id} not found in graph")
+
+        node_data = self.graph.nodes[node_id]
+        if node_data.get("node_type") != NodeType.PAPER.value:
+            raise ValueError(f"Node {node_id} is not a paper node")
+
+        # Update metadata
+        metadata = node_data.get("metadata", {})
+        metadata["has_full_text"] = True
+        metadata["rag_paper_id"] = rag_paper_id
+
+        # Update the node
+        self.graph.nodes[node_id]["metadata"] = metadata
+        self.graph.nodes[node_id]["updated_at"] = datetime.utcnow().isoformat()
+        self.updated_at = datetime.utcnow()
 
     def get_relevant_context(
         self,
