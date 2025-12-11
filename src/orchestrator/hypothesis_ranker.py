@@ -460,7 +460,9 @@ class HypothesisRanker:
         if not hypothesis_nodes:
             return 1.0  # Maximum uncertainty if not found
 
-        confidence = hypothesis_nodes[0].get("confidence", 0.5)
+        confidence = hypothesis_nodes[0].get("confidence")
+        if confidence is None:
+            confidence = 0.5  # Default confidence if not set
 
         # Uncertainty is inverse of confidence
         uncertainty = 1.0 - confidence

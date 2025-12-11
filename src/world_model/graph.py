@@ -405,6 +405,90 @@ class WorldModel:
 
         return {"node_id": node_id, **self.graph.nodes[node_id]}
 
+    def query_nodes(
+        self,
+        node_type: Optional[NodeType] = None,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Query nodes by type and/or filters.
+
+        Args:
+            node_type: Filter by node type (optional)
+            filters: Dictionary of attribute filters (optional).
+                     Supported filters:
+                     - node_id: Match specific node ID
+                     - confidence_min: Minimum confidence threshold
+                     - confidence_max: Maximum confidence threshold
+                     - text_contains: Text substring match (case-insensitive)
+
+        Returns:
+            List of matching node dictionaries
+
+        Example:
+            # Get all hypotheses
+            hypotheses = world_model.query_nodes(NodeType.HYPOTHESIS)
+
+            # Get specific hypothesis by ID
+            result = world_model.query_nodes(
+                NodeType.HYPOTHESIS,
+                filters={"node_id": "hyp-123"}
+            )
+
+            # Get high-confidence findings
+            findings = world_model.query_nodes(
+                NodeType.FINDING,
+                filters={"confidence_min": 0.8}
+            )
+        """
+        filters = filters or {}
+        results = []
+
+        for node_id, data in self.graph.nodes(data=True):
+            # Filter by node type
+            if node_type is not None:
+                if data.get("node_type") != node_type.value:
+                    continue
+
+            # Filter by specific node_id
+            if "node_id" in filters:
+                if node_id != filters["node_id"]:
+                    continue
+
+            # Filter by minimum confidence
+            if "confidence_min" in filters:
+                node_conf = data.get("confidence")
+                if node_conf is None or node_conf < filters["confidence_min"]:
+                    continue
+
+            # Filter by maximum confidence
+            if "confidence_max" in filters:
+                node_conf = data.get("confidence")
+                if node_conf is None or node_conf > filters["confidence_max"]:
+                    continue
+
+            # Filter by text substring (case-insensitive)
+            if "text_contains" in filters:
+                node_text = data.get("text", "").lower()
+                if filters["text_contains"].lower() not in node_text:
+                    continue
+
+            # Filter by metadata key-value pairs
+            if "metadata" in filters:
+                node_metadata = data.get("metadata", {})
+                match = True
+                for key, value in filters["metadata"].items():
+                    if node_metadata.get(key) != value:
+                        match = False
+                        break
+                if not match:
+                    continue
+
+            # Node passed all filters
+            results.append({"node_id": node_id, **data})
+
+        return results
+
     def get_neighbors(
         self,
         node_id: str,
