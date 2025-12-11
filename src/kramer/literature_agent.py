@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+import re
 import xml.etree.ElementTree as ET
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
@@ -11,6 +12,10 @@ import httpx
 import anthropic
 
 logger = logging.getLogger(__name__)
+
+# Rate limit settings for Semantic Scholar
+SS_MAX_RETRIES = 3
+SS_BASE_DELAY = 2.0  # Base delay in seconds for exponential backoff
 
 
 @dataclass
@@ -37,6 +42,7 @@ class LiteratureAgent:
     def __init__(
         self,
         anthropic_api_key: Optional[str] = None,
+        semantic_scholar_api_key: Optional[str] = None,
         model: str = "claude-sonnet-4-20250514",
         search_arxiv: bool = True,
         search_semantic_scholar: bool = True
@@ -46,6 +52,7 @@ class LiteratureAgent:
 
         Args:
             anthropic_api_key: Claude API key (defaults to ANTHROPIC_API_KEY env var)
+            semantic_scholar_api_key: Semantic Scholar API key (defaults to SEMANTIC_SCHOLAR_API_KEY env var)
             model: Claude model to use for claim extraction
             search_arxiv: Whether to search arXiv (default True)
             search_semantic_scholar: Whether to search Semantic Scholar (default True)
@@ -56,6 +63,9 @@ class LiteratureAgent:
         self.total_cost = 0.0
         self.search_arxiv = search_arxiv
         self.search_semantic_scholar = search_semantic_scholar
+
+        # Semantic Scholar API key for higher rate limits
+        self.ss_api_key = semantic_scholar_api_key or os.getenv("SEMANTIC_SCHOLAR_API_KEY")
 
     async def search(
         self,
@@ -205,13 +215,70 @@ class LiteratureAgent:
             "cost": self.total_cost
         }
 
+    def _simplify_query(self, query: str) -> str:
+        """
+        Simplify a long query into key search terms.
+
+        Args:
+            query: Original query (may be a full sentence)
+
+        Returns:
+            Simplified query with key terms
+        """
+        # Remove common filler phrases
+        filler_phrases = [
+            r"^Search for papers on\s+",
+            r"^Search for\s+",
+            r"^Find papers about\s+",
+            r"^Find research on\s+",
+            r"^Papers on\s+",
+            r"^Research on\s+",
+            r"\s+including\s+.*$",
+            r"\s+focusing on\s+.*$",
+            r"\s+specifically\s+.*$",
+        ]
+
+        simplified = query
+        for pattern in filler_phrases:
+            simplified = re.sub(pattern, "", simplified, flags=re.IGNORECASE)
+
+        # Limit to first 100 chars (API limit) and clean up
+        simplified = simplified.strip()[:100].strip()
+
+        return simplified if simplified else query[:100]
+
+    def _detect_fields_of_study(self, query: str) -> Optional[str]:
+        """
+        Detect appropriate fields of study based on query content.
+
+        Args:
+            query: Search query
+
+        Returns:
+            Comma-separated fields of study or None
+        """
+        query_lower = query.lower()
+
+        # Medical/health terms
+        medical_terms = [
+            "disease", "syndrome", "disorder", "therapy", "treatment",
+            "patient", "clinical", "diagnosis", "symptom", "medication",
+            "cancer", "diabetes", "colitis", "inflammation", "immune",
+            "infection", "virus", "bacteria", "pathogen", "microbiome"
+        ]
+
+        if any(term in query_lower for term in medical_terms):
+            return "Medicine,Biology"
+
+        return None
+
     async def _search_semantic_scholar(
         self,
         query: str,
         max_results: int
     ) -> List[Paper]:
         """
-        Search Semantic Scholar API for papers.
+        Search Semantic Scholar API for papers with retry logic.
 
         Args:
             query: Search query
@@ -222,45 +289,90 @@ class LiteratureAgent:
         """
         url = "https://api.semanticscholar.org/graph/v1/paper/search"
 
+        # Simplify long queries
+        simplified_query = self._simplify_query(query)
+
         params = {
-            "query": query,
+            "query": simplified_query,
             "limit": min(max_results, 100),  # API limit
             "fields": "paperId,title,authors,year,abstract,citationCount,url"
         }
 
+        # Add fields of study filter if applicable
+        fields_of_study = self._detect_fields_of_study(query)
+        if fields_of_study:
+            params["fieldsOfStudy"] = fields_of_study
+
+        # Build headers with API key if available
+        headers = {}
+        if self.ss_api_key:
+            headers["x-api-key"] = self.ss_api_key
+
         async with httpx.AsyncClient(timeout=30.0) as client:
-            try:
-                response = await client.get(url, params=params)
-                response.raise_for_status()
-                data = response.json()
+            for attempt in range(SS_MAX_RETRIES):
+                try:
+                    response = await client.get(url, params=params, headers=headers)
 
-                papers = []
-                for item in data.get("data", []):
-                    authors_list = [a.get("name", "Unknown") for a in item.get("authors", [])]
-                    authors_str = ", ".join(authors_list) if authors_list else "Unknown"
+                    # Handle rate limiting with exponential backoff
+                    if response.status_code == 429:
+                        delay = SS_BASE_DELAY * (2 ** attempt)
+                        logger.warning(
+                            f"Semantic Scholar rate limit hit (attempt {attempt + 1}/{SS_MAX_RETRIES}). "
+                            f"Retrying in {delay:.1f}s..."
+                        )
+                        print(
+                            f"  ⏳ Semantic Scholar rate limit - waiting {delay:.1f}s "
+                            f"(attempt {attempt + 1}/{SS_MAX_RETRIES})"
+                        )
+                        await asyncio.sleep(delay)
+                        continue
 
-                    paper = Paper(
-                        paper_id=item.get("paperId", ""),
-                        title=item.get("title", "Untitled"),
-                        authors=authors_str,
-                        year=item.get("year"),
-                        abstract=item.get("abstract"),
-                        citation_count=item.get("citationCount", 0),
-                        url=item.get("url"),
-                        relevance_score=0.8,  # Semantic Scholar doesn't provide this
-                        source="semantic_scholar"
-                    )
-                    papers.append(paper)
+                    response.raise_for_status()
+                    data = response.json()
 
-                logger.info(f"Found {len(papers)} papers on Semantic Scholar for: {query}")
-                return papers
+                    papers = []
+                    for item in data.get("data", []):
+                        authors_list = [a.get("name", "Unknown") for a in item.get("authors", [])]
+                        authors_str = ", ".join(authors_list) if authors_list else "Unknown"
 
-            except httpx.HTTPError as e:
-                logger.error(f"Error searching Semantic Scholar: {e}")
-                return []
-            except Exception as e:
-                logger.error(f"Unexpected error in Semantic Scholar search: {e}")
-                return []
+                        paper = Paper(
+                            paper_id=item.get("paperId", ""),
+                            title=item.get("title", "Untitled"),
+                            authors=authors_str,
+                            year=item.get("year"),
+                            abstract=item.get("abstract"),
+                            citation_count=item.get("citationCount") or 0,
+                            url=item.get("url"),
+                            relevance_score=0.8,  # Semantic Scholar doesn't provide this
+                            source="semantic_scholar"
+                        )
+                        papers.append(paper)
+
+                    logger.info(f"Found {len(papers)} papers on Semantic Scholar for: {simplified_query}")
+                    if papers:
+                        print(f"  📚 Found {len(papers)} papers from Semantic Scholar")
+                    return papers
+
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 429 and attempt < SS_MAX_RETRIES - 1:
+                        delay = SS_BASE_DELAY * (2 ** attempt)
+                        await asyncio.sleep(delay)
+                        continue
+                    logger.error(f"Error searching Semantic Scholar: {e}")
+                    print(f"  ⚠️ Semantic Scholar error: {e}")
+                    return []
+                except httpx.HTTPError as e:
+                    logger.error(f"Error searching Semantic Scholar: {e}")
+                    print(f"  ⚠️ Semantic Scholar error: {e}")
+                    return []
+                except Exception as e:
+                    logger.error(f"Unexpected error in Semantic Scholar search: {e}")
+                    return []
+
+            # All retries exhausted
+            logger.error(f"Semantic Scholar rate limit exceeded after {SS_MAX_RETRIES} retries")
+            print(f"  ❌ Semantic Scholar rate limit exceeded after {SS_MAX_RETRIES} retries")
+            return []
 
     async def _search_arxiv(
         self,
