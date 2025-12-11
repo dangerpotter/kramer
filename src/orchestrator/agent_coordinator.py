@@ -353,6 +353,7 @@ class AgentCoordinator:
             test_approaches = task.context.get("test_approaches", ["both"])
 
             if not hypothesis_id:
+                print(f"  ✗ Hypothesis test failed: No hypothesis_id provided")
                 return TaskResult(
                     success=False,
                     task_id=task.task_id,
@@ -362,6 +363,18 @@ class AgentCoordinator:
                     metadata={},
                     error="No hypothesis_id provided in task context",
                 )
+
+            # Get hypothesis text for logging
+            hypothesis_text = ""
+            if world_model.graph.has_node(hypothesis_id):
+                node_data = world_model.graph.nodes[hypothesis_id]
+                hypothesis_text = node_data.get("text", "")[:80]
+                if len(node_data.get("text", "")) > 80:
+                    hypothesis_text += "..."
+
+            print(f"  Testing hypothesis {hypothesis_id[:8]}...")
+            if hypothesis_text:
+                print(f"    \"{hypothesis_text}\"")
 
             # Create HypothesisTesterAgent
             tester = HypothesisTesterAgent(
@@ -376,6 +389,18 @@ class AgentCoordinator:
                 hypothesis_id=hypothesis_id,
                 dataset_path=dataset_path,
                 test_approaches=test_approaches,
+            )
+
+            # Log the test result
+            outcome_emoji = {
+                "supported": "✓",
+                "refuted": "✗",
+                "inconclusive": "?",
+            }.get(test_result.outcome, "•")
+            print(
+                f"  {outcome_emoji} Hypothesis {hypothesis_id[:8]}: "
+                f"{test_result.outcome.upper()} (confidence: {test_result.confidence:.2f}) "
+                f"via {test_result.test_type}"
             )
 
             # Update world model with test results
@@ -428,7 +453,7 @@ class AgentCoordinator:
             import traceback
 
             error_msg = f"Error executing hypothesis test: {str(e)}"
-            print(error_msg)
+            print(f"  ✗ Hypothesis {task.context.get('hypothesis_id', 'unknown')[:8]}: FAILED - {str(e)}")
             print(traceback.format_exc())
 
             return TaskResult(

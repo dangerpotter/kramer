@@ -231,6 +231,9 @@ class Orchestrator:
         # Synthesis tracking
         self.synthesis_results: List[Dict[str, Any]] = []
 
+        # Completion tracking (for spawn decisions)
+        self.last_completion_score: Optional[float] = None
+
         # Concurrency control
         self.semaphore = asyncio.Semaphore(max_concurrent_tasks)
 
@@ -820,6 +823,10 @@ Create 2-4 tasks that would best advance this research objective."""
         task.status = TaskStatus.RUNNING
         task.started_at = datetime.utcnow()
 
+        # Log task start
+        task_info = task.context.get("hypothesis_id", task.objective[:50] if task.objective else "")[:50]
+        print(f"  [TASK] Starting {task.task_type.value}: {task_info}...")
+
         # Add to active tasks
         self.active_tasks[task.task_id] = task
 
@@ -933,10 +940,12 @@ Create 2-4 tasks that would best advance this research objective."""
             if result.success:
                 task.status = TaskStatus.COMPLETED
                 task.result = result.to_dict()
+                print(f"  [TASK] Completed {task.task_type.value}: ${result.cost:.4f}")
             else:
                 task.status = TaskStatus.FAILED
                 task.error = result.error
                 task.result = result.to_dict()
+                print(f"  [TASK] Failed {task.task_type.value}: {result.error}")
 
             # Update budget
             cycle.budget_used += result.cost
@@ -954,6 +963,7 @@ Create 2-4 tasks that would best advance this research objective."""
                 "success": False,
                 "error": str(e),
             }
+            print(f"  [TASK] Error in {task.task_type.value}: {str(e)}")
 
         finally:
             # Mark completion time and remove from active tasks
@@ -1019,6 +1029,16 @@ Create 2-4 tasks that would best advance this research objective."""
         # Note: These tasks will be picked up in the next execution wave
         # since we're in the middle of executing the current wave
 
+    def _count_untested_hypotheses(self) -> int:
+        """Count hypotheses that haven't been tested yet."""
+        count = 0
+        for node_id, data in self.world_model.graph.nodes(data=True):
+            if data.get("node_type") == "hypothesis":
+                metadata = data.get("metadata", {})
+                if not metadata.get("tested", False):
+                    count += 1
+        return count
+
     def _should_spawn_new_cycle(self, current_cycle: Cycle) -> bool:
         """
         Determine if a new discovery cycle should be spawned.
@@ -1078,10 +1098,40 @@ Create 2-4 tasks that would best advance this research objective."""
                     if node_created >= current_cycle.started_at and novelty > novelty_threshold:
                         novel_findings_count += 1
 
+        # Check for untested hypotheses
+        untested_hypotheses = self._count_untested_hypotheses()
+
+        # Check completion score - continue if objective is incomplete
+        completion_incomplete = (
+            self.last_completion_score is not None and
+            self.last_completion_score < 0.7
+        )
+
         # Spawn new cycle if:
         # - We have new hypotheses to explore, OR
-        # - We have novel findings that warrant further investigation
-        return new_hypotheses > 0 or novel_findings_count > 0
+        # - We have novel findings that warrant further investigation, OR
+        # - We have untested hypotheses, OR
+        # - The objective completion is below threshold
+        should_spawn = (
+            new_hypotheses > 0 or
+            novel_findings_count > 0 or
+            untested_hypotheses > 0 or
+            completion_incomplete
+        )
+
+        if should_spawn:
+            reasons = []
+            if new_hypotheses > 0:
+                reasons.append(f"{new_hypotheses} new hypotheses")
+            if novel_findings_count > 0:
+                reasons.append(f"{novel_findings_count} novel findings")
+            if untested_hypotheses > 0:
+                reasons.append(f"{untested_hypotheses} untested hypotheses")
+            if completion_incomplete:
+                reasons.append(f"completion score {self.last_completion_score:.2f} < 0.7")
+            print(f"Spawn conditions met: {', '.join(reasons)}")
+
+        return should_spawn
 
     def _spawn_follow_up_cycle(self, parent_cycle: Cycle) -> Cycle:
         """
@@ -1516,6 +1566,9 @@ Respond with JSON in this exact format:
 
         llm_score = llm_assessment.get("completion_score", 0.0)
         has_llm = "error" not in llm_assessment
+
+        # Store for use in spawn decisions
+        self.last_completion_score = llm_score if has_llm else None
 
         # Decision criteria
         completion_criteria = []
