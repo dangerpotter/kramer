@@ -279,6 +279,7 @@ class AgentCoordinator:
             current_cycle = task.context.get("current_cycle")
             max_hypotheses = task.context.get("max_hypotheses", 5)
             min_finding_confidence = task.context.get("min_finding_confidence", 0.6)
+            objective = task.context.get("objective") or task.objective
 
             # Create hypothesis agent
             agent = HypothesisAgent(
@@ -290,6 +291,7 @@ class AgentCoordinator:
             # Generate hypotheses in thread pool
             result = await asyncio.to_thread(
                 agent.generate_hypotheses,
+                objective=objective,
                 current_cycle=current_cycle,
                 min_finding_confidence=min_finding_confidence,
             )

@@ -2,7 +2,29 @@
   "permissions": {
     "allow": [
       "Bash(git log:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(docker-compose build:*)",
+      "Bash(tee:*)",
+      "Bash(./start-webui.sh:*)",
+      "Bash(docker-compose up:*)",
+      "Bash(docker-compose ps:*)",
+      "Bash(docker logs:*)",
+      "Bash(curl:*)",
+      "Bash(python:*)",
+      "Bash(docker-compose down:*)",
+      "Bash(docker exec:*)",
+      "Bash(docker-compose restart:*)",
+      "Bash(docker ps:*)",
+      "Bash(docker images:*)",
+      "Bash(docker-compose logs:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nFix multiple bugs and enhance knowledge graph visualization\n\nBug fixes:\n- Fix DiscoveryService singleton issue causing 404 flip-flop on dashboard\n- Fix arXiv API using HTTP instead of HTTPS (301 redirect failures)\n- Fix metrics endpoint iterating dict keys instead of values (500 error)\n- Fix sidebar navigation losing discovery ID when switching pages\n- Filter WebSocket pong/heartbeat messages from activity feed\n- Add data transform functions for dashboard charts\n\nEnhancements:\n- Enhance knowledge graph with colored nodes by type (hypothesis, finding, paper, dataset, question)\n- Add legend showing node types and relationship types\n- Improve node styling with borders, text outlines, and hover effects\n- Improve edge styling with background labels and larger arrows\n- Use dark background for better graph contrast\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(git push)",
+      "Bash(git stash:*)",
+      "Bash(git pull:*)",
+      "Bash(git stash pop:*)",
+      "Bash(git commit:*)",
+      "Bash(cat:*)"
     ],
     "deny": [],
     "ask": []

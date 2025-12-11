@@ -73,6 +73,7 @@ class HypothesisAgent:
 
     def generate_hypotheses(
         self,
+        objective: Optional[str] = None,
         current_cycle: Optional[int] = None,
         min_finding_confidence: float = 0.6,
         max_findings: int = 20,
@@ -81,6 +82,7 @@ class HypothesisAgent:
         Generate novel hypotheses based on recent findings.
 
         Args:
+            objective: Research objective to focus hypotheses on
             current_cycle: Current research cycle (for provenance tracking)
             min_finding_confidence: Minimum confidence threshold for findings
             max_findings: Maximum number of findings to analyze
@@ -105,12 +107,14 @@ class HypothesisAgent:
             findings=findings,
             existing_hypotheses=existing_hypotheses,
             papers=papers,
+            objective=objective,
         )
 
         # Create prompt for hypothesis generation
         prompt = self._create_hypothesis_prompt(
             context=context,
             max_hypotheses=self.max_hypotheses,
+            objective=objective,
         )
 
         # Call Claude API
@@ -247,6 +251,7 @@ class HypothesisAgent:
         findings: List[Dict[str, Any]],
         existing_hypotheses: List[Dict[str, Any]],
         papers: List[Dict[str, Any]],
+        objective: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Build structured context for hypothesis generation.
@@ -255,6 +260,7 @@ class HypothesisAgent:
             findings: List of findings
             existing_hypotheses: List of existing hypotheses
             papers: List of papers
+            objective: Research objective
 
         Returns:
             Context dictionary
@@ -263,6 +269,7 @@ class HypothesisAgent:
             "findings": findings,
             "existing_hypotheses": existing_hypotheses,
             "papers": papers,
+            "objective": objective,
             "total_findings": len(findings),
             "total_hypotheses": len(existing_hypotheses),
             "total_papers": len(papers),
@@ -272,6 +279,7 @@ class HypothesisAgent:
         self,
         context: Dict[str, Any],
         max_hypotheses: int,
+        objective: Optional[str] = None,
     ) -> str:
         """
         Create the Claude prompt for hypothesis generation.
@@ -279,6 +287,7 @@ class HypothesisAgent:
         Args:
             context: Context dictionary with findings, hypotheses, and papers
             max_hypotheses: Maximum number of hypotheses to generate
+            objective: Research objective to focus on
 
         Returns:
             Prompt string
@@ -305,11 +314,24 @@ class HypothesisAgent:
             [f"- {p['title']}: {p['text']}" for p in papers[:8]]  # Limit to most relevant
         )
 
+        # Format objective section
+        objective_section = ""
+        if objective:
+            objective_section = f"""## Research Objective
+
+**IMPORTANT**: All hypotheses MUST be directly relevant to this research objective:
+
+"{objective}"
+
+Generate hypotheses that specifically address this objective. Do NOT generate hypotheses about unrelated topics.
+
+"""
+
         prompt = f"""You are a scientific research assistant specialized in hypothesis generation.
 
 Your task is to analyze research findings and generate novel, testable hypotheses.
 
-## Research Findings
+{objective_section}## Research Findings
 
 Based on recent data analysis, we have identified the following findings:
 
@@ -329,7 +351,7 @@ To avoid duplication, here are hypotheses we've already generated:
 
 ## Task
 
-Generate up to {max_hypotheses} novel, testable hypotheses based on the findings and literature.
+Generate up to {max_hypotheses} novel, testable hypotheses{"" if not objective else f" about: {objective}"}.
 
 For each hypothesis, provide:
 1. **Statement**: A clear, concise hypothesis statement

@@ -294,12 +294,17 @@ class Orchestrator:
         if len(cycle.tasks) >= cycle.max_tasks:
             raise ValueError(f"Cycle {cycle_id} has reached max tasks ({cycle.max_tasks})")
 
+        # Ensure context includes cycle objective for hypothesis generation
+        task_context = context or {}
+        if task_type == TaskType.GENERATE_HYPOTHESIS and "objective" not in task_context:
+            task_context["objective"] = cycle.objective
+
         task = Task(
             task_id=str(uuid4()),
             task_type=task_type,
             status=TaskStatus.PENDING,
             objective=objective,
-            context=context or {},
+            context=task_context,
             parent_task_id=parent_task_id,
         )
 
