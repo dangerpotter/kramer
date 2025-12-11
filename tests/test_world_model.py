@@ -232,6 +232,182 @@ class TestEdgeOperations:
         assert len(refuters) == 1
 
 
+class TestQueryNodes:
+    """Test the query_nodes method."""
+
+    def test_query_all_nodes_of_type(self):
+        """Test querying all nodes of a specific type."""
+        wm = WorldModel()
+
+        # Add various node types
+        wm.add_hypothesis(text="Hypothesis 1")
+        wm.add_hypothesis(text="Hypothesis 2")
+        wm.add_finding(text="Finding 1")
+        wm.add_question(text="Question 1")
+
+        # Query all hypotheses
+        hypotheses = wm.query_nodes(NodeType.HYPOTHESIS)
+        assert len(hypotheses) == 2
+        for h in hypotheses:
+            assert h["node_type"] == "hypothesis"
+
+        # Query all findings
+        findings = wm.query_nodes(NodeType.FINDING)
+        assert len(findings) == 1
+
+        # Query all questions
+        questions = wm.query_nodes(NodeType.QUESTION)
+        assert len(questions) == 1
+
+    def test_query_by_node_id(self):
+        """Test querying by specific node ID."""
+        wm = WorldModel()
+
+        hyp1 = wm.add_hypothesis(text="Target hypothesis")
+        wm.add_hypothesis(text="Other hypothesis")
+
+        # Query specific hypothesis
+        result = wm.query_nodes(
+            NodeType.HYPOTHESIS,
+            filters={"node_id": hyp1}
+        )
+
+        assert len(result) == 1
+        assert result[0]["node_id"] == hyp1
+        assert result[0]["text"] == "Target hypothesis"
+
+    def test_query_by_confidence_min(self):
+        """Test querying with minimum confidence filter."""
+        wm = WorldModel()
+
+        wm.add_finding(text="High confidence", confidence=0.9)
+        wm.add_finding(text="Medium confidence", confidence=0.5)
+        wm.add_finding(text="Low confidence", confidence=0.2)
+
+        # Query high confidence only
+        results = wm.query_nodes(
+            NodeType.FINDING,
+            filters={"confidence_min": 0.8}
+        )
+
+        assert len(results) == 1
+        assert results[0]["confidence"] == 0.9
+
+    def test_query_by_confidence_max(self):
+        """Test querying with maximum confidence filter."""
+        wm = WorldModel()
+
+        wm.add_finding(text="High confidence", confidence=0.9)
+        wm.add_finding(text="Medium confidence", confidence=0.5)
+        wm.add_finding(text="Low confidence", confidence=0.2)
+
+        # Query low confidence only
+        results = wm.query_nodes(
+            NodeType.FINDING,
+            filters={"confidence_max": 0.3}
+        )
+
+        assert len(results) == 1
+        assert results[0]["confidence"] == 0.2
+
+    def test_query_by_confidence_range(self):
+        """Test querying with confidence range."""
+        wm = WorldModel()
+
+        wm.add_finding(text="High", confidence=0.9)
+        wm.add_finding(text="Medium", confidence=0.5)
+        wm.add_finding(text="Low", confidence=0.2)
+
+        # Query medium range
+        results = wm.query_nodes(
+            NodeType.FINDING,
+            filters={"confidence_min": 0.4, "confidence_max": 0.6}
+        )
+
+        assert len(results) == 1
+        assert results[0]["text"] == "Medium"
+
+    def test_query_by_text_contains(self):
+        """Test querying with text substring filter."""
+        wm = WorldModel()
+
+        wm.add_hypothesis(text="Climate change is real")
+        wm.add_hypothesis(text="Temperature is rising")
+        wm.add_hypothesis(text="Climate patterns are changing")
+
+        # Query for "climate"
+        results = wm.query_nodes(
+            NodeType.HYPOTHESIS,
+            filters={"text_contains": "climate"}
+        )
+
+        assert len(results) == 2
+        for r in results:
+            assert "climate" in r["text"].lower()
+
+    def test_query_by_metadata(self):
+        """Test querying with metadata filter."""
+        wm = WorldModel()
+
+        wm.add_hypothesis(text="Tested hypothesis", metadata={"tested": True})
+        wm.add_hypothesis(text="Untested hypothesis", metadata={"tested": False})
+        wm.add_hypothesis(text="No metadata hypothesis")
+
+        # Query tested hypotheses
+        results = wm.query_nodes(
+            NodeType.HYPOTHESIS,
+            filters={"metadata": {"tested": True}}
+        )
+
+        assert len(results) == 1
+        assert results[0]["text"] == "Tested hypothesis"
+
+    def test_query_without_type_filter(self):
+        """Test querying without node type filter returns all nodes."""
+        wm = WorldModel()
+
+        wm.add_hypothesis(text="H1")
+        wm.add_finding(text="F1")
+        wm.add_question(text="Q1")
+
+        # Query all nodes
+        results = wm.query_nodes()
+
+        assert len(results) == 3
+
+    def test_query_empty_result(self):
+        """Test querying returns empty list when no matches."""
+        wm = WorldModel()
+
+        wm.add_finding(text="Only finding")
+
+        # Query for hypotheses (none exist)
+        results = wm.query_nodes(NodeType.HYPOTHESIS)
+
+        assert results == []
+
+    def test_query_combined_filters(self):
+        """Test querying with multiple filters combined."""
+        wm = WorldModel()
+
+        wm.add_hypothesis(text="Climate hypothesis", confidence=0.9)
+        wm.add_hypothesis(text="Climate guess", confidence=0.3)
+        wm.add_hypothesis(text="Weather hypothesis", confidence=0.9)
+
+        # Query high confidence climate hypotheses
+        results = wm.query_nodes(
+            NodeType.HYPOTHESIS,
+            filters={
+                "text_contains": "climate",
+                "confidence_min": 0.8
+            }
+        )
+
+        assert len(results) == 1
+        assert "climate" in results[0]["text"].lower()
+        assert results[0]["confidence"] == 0.9
+
+
 class TestRelevantContext:
     """Test getting relevant context from the world model."""
 

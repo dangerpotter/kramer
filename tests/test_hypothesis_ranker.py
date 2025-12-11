@@ -201,7 +201,6 @@ class TestHypothesisScoring:
     which is expected by the HypothesisRanker but may not be implemented.
     """
 
-    @pytest.mark.skip(reason="WorldModel.query_nodes not implemented")
     def test_score_hypothesis(self):
         """Test scoring a single hypothesis."""
         wm = WorldModel()
@@ -220,7 +219,6 @@ class TestHypothesisScoring:
         assert score.hypothesis_text == "Temperature increase causes ice melt"
         assert 0 <= score.composite_score <= 1
 
-    @pytest.mark.skip(reason="WorldModel.query_nodes not implemented")
     def test_score_nonexistent_hypothesis(self):
         """Test scoring nonexistent hypothesis returns None."""
         wm = WorldModel()
@@ -230,7 +228,6 @@ class TestHypothesisScoring:
 
         assert score is None
 
-    @pytest.mark.skip(reason="WorldModel.query_nodes not implemented")
     def test_score_cached(self):
         """Test that scores are cached."""
         wm = WorldModel()
@@ -244,7 +241,6 @@ class TestHypothesisScoring:
         # Should be the same object (cached)
         assert score1 is score2
 
-    @pytest.mark.skip(reason="WorldModel.query_nodes not implemented")
     def test_clear_cache(self):
         """Test clearing score cache."""
         wm = WorldModel()
@@ -266,7 +262,6 @@ class TestHypothesisRanking:
     Note: These tests require the WorldModel to have a query_nodes method.
     """
 
-    @pytest.mark.skip(reason="WorldModel.query_nodes not implemented")
     def test_rank_hypotheses_empty(self):
         """Test ranking with no hypotheses."""
         wm = WorldModel()
@@ -276,7 +271,6 @@ class TestHypothesisRanking:
 
         assert scores == []
 
-    @pytest.mark.skip(reason="WorldModel.query_nodes not implemented")
     def test_rank_single_hypothesis(self):
         """Test ranking a single hypothesis."""
         wm = WorldModel()
@@ -288,7 +282,6 @@ class TestHypothesisRanking:
         assert len(scores) == 1
         assert scores[0].rank == 1
 
-    @pytest.mark.skip(reason="WorldModel.query_nodes not implemented")
     def test_rank_multiple_hypotheses(self):
         """Test ranking multiple hypotheses."""
         wm = WorldModel()
@@ -318,7 +311,6 @@ class TestHypothesisRanking:
         assert scores[0].composite_score >= scores[1].composite_score
         assert scores[1].composite_score >= scores[2].composite_score
 
-    @pytest.mark.skip(reason="WorldModel.query_nodes not implemented")
     def test_rank_specific_hypotheses(self):
         """Test ranking specific hypothesis IDs."""
         wm = WorldModel()
@@ -334,7 +326,6 @@ class TestHypothesisRanking:
 
         assert len(scores) == 2
 
-    @pytest.mark.skip(reason="WorldModel.query_nodes not implemented")
     def test_rank_top_k(self):
         """Test limiting to top K hypotheses."""
         wm = WorldModel()
@@ -355,7 +346,6 @@ class TestIndividualScores:
     Note: Some tests require WorldModel.query_nodes.
     """
 
-    @pytest.mark.skip(reason="WorldModel.query_nodes not implemented")
     def test_compute_novelty_single(self):
         """Test novelty for single hypothesis."""
         wm = WorldModel()
@@ -367,7 +357,6 @@ class TestIndividualScores:
         # First hypothesis should be maximally novel
         assert novelty == 1.0
 
-    @pytest.mark.skip(reason="WorldModel.query_nodes not implemented")
     def test_compute_novelty_similar(self):
         """Test novelty for similar hypotheses."""
         wm = WorldModel()
@@ -381,7 +370,6 @@ class TestIndividualScores:
         # Similar hypotheses should have lower novelty
         assert novelty < 0.5
 
-    @pytest.mark.skip(reason="WorldModel.query_nodes not implemented")
     def test_compute_testability_with_data(self):
         """Test testability with available data."""
         wm = WorldModel()
@@ -403,7 +391,6 @@ class TestIndividualScores:
         # Should have high testability
         assert testability >= 0.5
 
-    @pytest.mark.skip(reason="WorldModel.query_nodes not implemented")
     def test_compute_testability_no_data(self):
         """Test testability without available data."""
         wm = WorldModel()
@@ -415,7 +402,6 @@ class TestIndividualScores:
         # Should have lower testability
         assert testability < 0.5
 
-    @pytest.mark.skip(reason="WorldModel.query_nodes not implemented")
     def test_compute_uncertainty(self):
         """Test uncertainty computation."""
         wm = WorldModel()
@@ -435,11 +421,10 @@ class TestIndividualScores:
         low_uncertainty = ranker._compute_uncertainty(hyp_low)
 
         # High confidence = low uncertainty
-        assert high_uncertainty == 0.1  # 1 - 0.9
+        assert high_uncertainty == pytest.approx(0.1)  # 1 - 0.9
         # Low confidence = high uncertainty
-        assert low_uncertainty == 0.7  # 1 - 0.3
+        assert low_uncertainty == pytest.approx(0.7)  # 1 - 0.3
 
-    @pytest.mark.skip(reason="WorldModel.query_nodes not implemented")
     def test_compute_strategic_value_with_objective(self):
         """Test strategic value with research objective."""
         wm = WorldModel()
@@ -618,7 +603,6 @@ class TestHelperMethods:
 class TestReportGeneration:
     """Test ranking report generation."""
 
-    @pytest.mark.skip(reason="WorldModel.query_nodes not implemented")
     def test_get_ranking_report(self):
         """Test generating ranking report."""
         wm = WorldModel()
@@ -642,7 +626,6 @@ class TestReportGeneration:
 class TestEdgeCases:
     """Test edge cases and special scenarios."""
 
-    @pytest.mark.skip(reason="WorldModel.query_nodes not implemented")
     def test_hypothesis_with_no_text(self):
         """Test scoring hypothesis without text."""
         wm = WorldModel()
@@ -660,7 +643,6 @@ class TestEdgeCases:
         assert score is not None
         assert score.hypothesis_text == ""
 
-    @pytest.mark.skip(reason="WorldModel.query_nodes not implemented")
     def test_multiple_datasets(self):
         """Test testability with multiple datasets."""
         wm = WorldModel()
@@ -677,7 +659,6 @@ class TestEdgeCases:
 
         assert testability >= 0.5
 
-    @pytest.mark.skip(reason="WorldModel.query_nodes not implemented")
     def test_composite_score_range(self):
         """Test that composite scores are in valid range."""
         wm = WorldModel()
