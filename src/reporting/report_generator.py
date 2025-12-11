@@ -7,6 +7,7 @@ groups related findings, and generates narrative reports with proper citations.
 
 import json
 import logging
+import os
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -542,7 +543,7 @@ class ReportGenerator:
 
         try:
             message = self.anthropic_client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model=os.getenv("CLAUDE_MODEL"),
                 max_tokens=2000,
                 messages=[
                     {"role": "user", "content": prompt}

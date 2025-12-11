@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     # API Keys (loaded from environment)
     ANTHROPIC_API_KEY: str = ""
 
+    # Model Configuration (REQUIRED - set via CLAUDE_MODEL env var)
+    CLAUDE_MODEL: str = ""
+
     class Config:
         env_file = "../.env"
         case_sensitive = True

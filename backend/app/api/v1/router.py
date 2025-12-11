@@ -4,7 +4,7 @@ Main API router that includes all v1 endpoints.
 
 from fastapi import APIRouter
 
-from app.api.v1 import discovery, world_model, datasets, reports, websocket
+from app.api.v1 import discovery, world_model, datasets, reports, websocket, models
 
 api_router = APIRouter()
 
@@ -14,3 +14,4 @@ api_router.include_router(world_model.router, prefix="/world-model", tags=["worl
 api_router.include_router(datasets.router, prefix="/datasets", tags=["datasets"])
 api_router.include_router(reports.router, prefix="/reports", tags=["reports"])
 api_router.include_router(websocket.router, tags=["websocket"])
+api_router.include_router(models.router, prefix="/models", tags=["models"])

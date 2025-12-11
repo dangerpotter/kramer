@@ -53,7 +53,7 @@ class HypothesisTesterAgent:
         self,
         world_model: WorldModel,
         api_key: Optional[str] = None,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = None,
         use_extended_thinking: bool = True,
         max_tokens: int = 8000,
     ):
@@ -68,7 +68,7 @@ class HypothesisTesterAgent:
             max_tokens: Maximum tokens for API response
         """
         self.world_model = world_model
-        self.model = model
+        self.model = model or os.getenv("CLAUDE_MODEL")
         self.use_extended_thinking = use_extended_thinking
         self.max_tokens = max_tokens
 
@@ -547,8 +547,11 @@ Refuting Evidence Criteria: {test_strategy.get('refuting_evidence_criteria', 'No
                     {
                         "type": "literature_review",
                         "source": "world_model",
+                        "finding": f"No literature evidence available to evaluate hypothesis: '{hypothesis_text[:100]}...'",
+                        "reasoning": "No papers have been collected in the knowledge base yet. Literature search is needed before hypothesis can be evaluated against existing research.",
                         "message": "No papers available in world model for literature-based testing",
                         "supports": None,
+                        "confidence": 0.0,
                     }
                 ],
                 "cost": 0.0,
@@ -630,6 +633,15 @@ Respond ONLY with the JSON array, no additional text.
                         paper = papers[paper_idx]
                         verdict = eval_data.get("verdict", "neutral")
 
+                        # Build a meaningful finding text from the evaluation
+                        reasoning = eval_data.get("reasoning", "")
+                        if verdict == "supports":
+                            finding_text = f"Paper '{paper['title']}' supports the hypothesis: {reasoning}"
+                        elif verdict == "refutes":
+                            finding_text = f"Paper '{paper['title']}' refutes the hypothesis: {reasoning}"
+                        else:
+                            finding_text = f"Paper '{paper['title']}' provides inconclusive evidence: {reasoning}"
+
                         evidence.append(
                             {
                                 "type": "literature_review",
@@ -639,7 +651,8 @@ Respond ONLY with the JSON array, no additional text.
                                 "verdict": verdict,
                                 "supports": verdict == "supports",
                                 "confidence": eval_data.get("confidence", 0.5),
-                                "reasoning": eval_data.get("reasoning", ""),
+                                "finding": finding_text,
+                                "reasoning": reasoning,
                                 "relevance": eval_data.get("relevance", 3),
                             }
                         )
@@ -656,8 +669,11 @@ Respond ONLY with the JSON array, no additional text.
                     {
                         "type": "error",
                         "source": "literature_review",
+                        "finding": f"Literature review failed due to error: {str(e)}",
+                        "reasoning": f"An error occurred while evaluating papers against the hypothesis: {str(e)}",
                         "message": str(e),
                         "supports": False,
+                        "confidence": 0.0,
                     }
                 ],
                 "cost": 0.0,

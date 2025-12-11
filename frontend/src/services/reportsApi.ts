@@ -13,11 +13,16 @@ export interface ReportContent {
   metadata?: Record<string, any>
 }
 
+interface ReportsResponse {
+  reports: Report[]
+  count: number
+}
+
 export const reportsApi = {
   // Get all reports for a discovery
   async getReports(discoveryId: string): Promise<Report[]> {
-    const { data } = await api.get<Report[]>(`/api/v1/reports/${discoveryId}`)
-    return data
+    const { data } = await api.get<ReportsResponse>(`/api/v1/reports/${discoveryId}`)
+    return data.reports || []
   },
 
   // Get report content

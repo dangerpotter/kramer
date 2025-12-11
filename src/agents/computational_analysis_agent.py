@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 class ModelingConfig:
     """Configuration for computational analysis."""
     api_key: Optional[str] = None
-    model: str = "claude-sonnet-4-20250514"
+    model: str = None
     timeout: int = 300  # 5 minutes for complex simulations
     max_iterations: int = 3
     use_extended_thinking: bool = True
@@ -71,6 +71,9 @@ class ComputationalAnalysisAgent:
             config: ModelingConfig instance
         """
         self.config = config
+        # Get model from config or environment
+        if not self.config.model:
+            self.config.model = os.getenv("CLAUDE_MODEL")
         self.client = Anthropic(api_key=config.api_key)
         self.executor = CodeExecutor(timeout=config.timeout)
 

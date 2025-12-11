@@ -418,7 +418,7 @@ Create 2-4 tasks that would best advance this research objective."""
             client = anthropic.Anthropic(api_key=api_key)
 
             response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=os.getenv("CLAUDE_MODEL"),
                 max_tokens=2000,
                 temperature=0.7,
                 messages=[
@@ -830,7 +830,8 @@ Create 2-4 tasks that would best advance this research objective."""
 
         # Log task start
         objective_str = str(task.objective) if task.objective else ""
-        task_info = task.context.get("hypothesis_id", objective_str[:50] if objective_str else "")[:50]
+        raw_info = task.context.get("hypothesis_id", objective_str[:50] if objective_str else "")
+        task_info = str(raw_info)[:50] if raw_info else ""
         print(f"  [TASK] Starting {task.task_type.value}: {task_info}...")
 
         # Add to active tasks
@@ -1396,7 +1397,7 @@ Respond with JSON in this exact format:
             client = anthropic.Anthropic(api_key=api_key)
 
             response = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model=os.getenv("CLAUDE_MODEL"),
                 max_tokens=1000,
                 temperature=0.3,  # Lower temperature for more consistent scoring
                 messages=[

@@ -113,7 +113,7 @@ class AgentCoordinator:
             # Create and run data analysis agent
             agent_config = AgentConfig(
                 api_key=self.api_key,
-                model="claude-sonnet-4-20250514",
+                model=os.getenv("CLAUDE_MODEL"),
                 use_extended_thinking=True,
                 max_iterations=task.context.get("max_iterations", 5),
             )
@@ -233,6 +233,27 @@ class AgentCoordinator:
                     }
                 )
 
+            # Store papers in world model for later retrieval
+            for paper in result.get("papers", []):
+                try:
+                    world_model.add_paper(
+                        text=paper.get("abstract", paper.get("title", "No abstract available")),
+                        title=paper.get("title", "Unknown Title"),
+                        authors=paper.get("authors", []),
+                        year=paper.get("year"),
+                        doi=paper.get("doi"),
+                        metadata={
+                            "url": paper.get("url"),
+                            "relevance_score": paper.get("relevance_score", 0.0),
+                            "source": paper.get("source", "unknown"),
+                            "query": task.objective,
+                            "arxiv_id": paper.get("arxiv_id"),
+                            "semantic_scholar_id": paper.get("paperId"),
+                        }
+                    )
+                except Exception as e:
+                    print(f"Warning: Could not add paper to world model: {e}")
+
             # Extract cost from result (if available)
             actual_cost = result.get("cost", 0.0)
 
@@ -350,7 +371,9 @@ class AgentCoordinator:
         """
         try:
             # Extract test parameters from task context
-            hypothesis_id = task.context.get("hypothesis_id")
+            # Convert to string in case Claude returned an integer
+            raw_hypothesis_id = task.context.get("hypothesis_id")
+            hypothesis_id = str(raw_hypothesis_id) if raw_hypothesis_id else None
             dataset_path = task.context.get("dataset_path")
             test_approaches = task.context.get("test_approaches", ["both"])
 
@@ -382,7 +405,7 @@ class AgentCoordinator:
             tester = HypothesisTesterAgent(
                 world_model=world_model,
                 api_key=self.api_key,
-                model="claude-sonnet-4-20250514",
+                model=os.getenv("CLAUDE_MODEL"),
                 use_extended_thinking=True,
             )
 
@@ -455,7 +478,8 @@ class AgentCoordinator:
             import traceback
 
             error_msg = f"Error executing hypothesis test: {str(e)}"
-            print(f"  ✗ Hypothesis {task.context.get('hypothesis_id', 'unknown')[:8]}: FAILED - {str(e)}")
+            hyp_id_display = str(task.context.get('hypothesis_id', 'unknown'))[:8]
+            print(f"  ✗ Hypothesis {hyp_id_display}: FAILED - {str(e)}")
             print(traceback.format_exc())
 
             return TaskResult(

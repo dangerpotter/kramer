@@ -1,6 +1,7 @@
 """Literature agent for searching papers and extracting claims."""
 
 import asyncio
+import os
 from typing import List, Optional, Dict, Any
 from dataclasses import dataclass
 import anthropic
@@ -50,7 +51,7 @@ class LiteratureAgent:
         world_model: WorldModel,
         anthropic_api_key: str,
         semantic_scholar_api_key: Optional[str] = None,
-        model: str = "claude-3-5-sonnet-20241022",
+        model: str = None,
         paper_processor: Optional["PaperProcessor"] = None,
         rag_engine: Optional["RAGEngine"] = None,
         use_full_text: bool = True,
@@ -72,7 +73,7 @@ class LiteratureAgent:
         self.world_model = world_model
         self.anthropic_client = anthropic.Anthropic(api_key=anthropic_api_key)
         self.ss_client = SemanticScholarClient(api_key=semantic_scholar_api_key)
-        self.model = model
+        self.model = model or os.getenv("CLAUDE_MODEL")
         self.total_cost: float = 0.0  # Track total API costs
         self.paper_processor = paper_processor
         self.rag_engine = rag_engine

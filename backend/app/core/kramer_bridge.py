@@ -5,6 +5,7 @@ This module provides a wrapper around the existing CycleManager and WorldModel
 to make them accessible via the web API.
 """
 
+import os
 import sys
 from pathlib import Path
 from typing import Callable, Dict, Optional
@@ -55,6 +56,12 @@ class KramerBridge:
         """
         # Store config
         self.discovery_configs[discovery_id] = config
+
+        # Set model from config if specified, otherwise use env var
+        if config.get("model"):
+            os.environ["CLAUDE_MODEL"] = config["model"]
+        elif not os.getenv("CLAUDE_MODEL"):
+            raise ValueError("CLAUDE_MODEL must be set either in config or environment")
 
         # Store event callback
         if event_callback:

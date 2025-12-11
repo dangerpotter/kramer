@@ -40,7 +40,7 @@ class TestLiteratureAgent:
         )
 
         assert agent.world_model == world
-        assert agent.model == "claude-3-5-sonnet-20241022"
+        # Model comes from CLAUDE_MODEL env var or passed explicitly
 
     def test_add_paper_to_world_model(self):
         """Test adding a paper to the world model."""

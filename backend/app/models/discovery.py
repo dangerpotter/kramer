@@ -21,6 +21,7 @@ class DiscoveryConfig(BaseModel):
     """Configuration for starting a new discovery."""
     objective: str = Field(..., description="The research objective to pursue")
     dataset_path: Optional[str] = Field(None, description="Path to dataset file")
+    model: Optional[str] = Field(None, description="Claude model to use (defaults to CLAUDE_MODEL env var)")
     max_cycles: int = Field(20, ge=1, le=100, description="Maximum number of cycles")
     max_total_budget: float = Field(100.0, ge=0, description="Maximum budget in USD")
     max_parallel_tasks: int = Field(4, ge=1, le=10, description="Max parallel tasks")

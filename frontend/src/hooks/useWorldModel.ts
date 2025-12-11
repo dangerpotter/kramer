@@ -40,3 +40,6 @@ export function usePapers(discoveryId: string) {
     enabled: !!discoveryId,
   })
 }
+
+// Alias for convenience
+export const useGraph = useWorldModelGraph

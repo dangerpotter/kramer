@@ -20,7 +20,7 @@ class AgentConfig:
     """Configuration for the DataAnalysisAgent."""
 
     api_key: Optional[str] = None
-    model: str = "claude-sonnet-4-20250514"
+    model: str = None
     max_tokens: int = 16000
     timeout: int = 300
     max_iterations: int = 5
@@ -71,6 +71,10 @@ class DataAnalysisAgent:
         """
 
         self.config = config or AgentConfig()
+
+        # Get model from config or environment
+        if not self.config.model:
+            self.config.model = os.getenv("CLAUDE_MODEL")
 
         # Get API key from config or environment
         api_key = self.config.api_key or os.getenv("ANTHROPIC_API_KEY")

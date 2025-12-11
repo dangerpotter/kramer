@@ -15,6 +15,7 @@ services:
     environment:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - SEMANTIC_SCHOLAR_API_KEY=${SEMANTIC_SCHOLAR_API_KEY}
+      - CLAUDE_MODEL=${CLAUDE_MODEL}
       - PYTHONPATH=/:/app
     restart: unless-stopped
     networks:

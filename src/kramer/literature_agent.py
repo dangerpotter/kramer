@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 SS_MAX_RETRIES = 3
 SS_BASE_DELAY = 2.0  # Base delay in seconds for exponential backoff
 
+# Rate limit settings for arXiv
+ARXIV_MAX_RETRIES = 3
+ARXIV_BASE_DELAY = 4.0  # arXiv requires 3s between calls, add buffer for backoff
+
 
 @dataclass
 class Paper:
@@ -43,7 +47,7 @@ class LiteratureAgent:
         self,
         anthropic_api_key: Optional[str] = None,
         semantic_scholar_api_key: Optional[str] = None,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = None,
         search_arxiv: bool = True,
         search_semantic_scholar: bool = True
     ):
@@ -59,7 +63,7 @@ class LiteratureAgent:
         """
         api_key = anthropic_api_key or os.getenv("ANTHROPIC_API_KEY")
         self.anthropic_client = anthropic.Anthropic(api_key=api_key) if api_key else None
-        self.model = model
+        self.model = model or os.getenv("CLAUDE_MODEL")
         self.total_cost = 0.0
         self.search_arxiv = search_arxiv
         self.search_semantic_scholar = search_semantic_scholar
@@ -380,7 +384,7 @@ class LiteratureAgent:
         max_results: int
     ) -> List[Paper]:
         """
-        Search arXiv API for papers.
+        Search arXiv API for papers with retry logic.
 
         Args:
             query: Search query
@@ -401,25 +405,56 @@ class LiteratureAgent:
         }
 
         async with httpx.AsyncClient(timeout=30.0) as client:
-            try:
-                # arXiv requests 3 second delay between calls
-                await asyncio.sleep(3)
+            for attempt in range(ARXIV_MAX_RETRIES):
+                try:
+                    # arXiv requests 3 second delay between calls
+                    await asyncio.sleep(3)
 
-                response = await client.get(url, params=params)
-                response.raise_for_status()
+                    response = await client.get(url, params=params)
 
-                # Parse Atom XML response
-                papers = self._parse_arxiv_response(response.text)
+                    # Handle rate limiting with exponential backoff
+                    if response.status_code == 429:
+                        delay = ARXIV_BASE_DELAY * (2 ** attempt)
+                        logger.warning(
+                            f"arXiv rate limit hit (attempt {attempt + 1}/{ARXIV_MAX_RETRIES}). "
+                            f"Retrying in {delay:.1f}s..."
+                        )
+                        print(
+                            f"  ⏳ arXiv rate limit - waiting {delay:.1f}s "
+                            f"(attempt {attempt + 1}/{ARXIV_MAX_RETRIES})"
+                        )
+                        await asyncio.sleep(delay)
+                        continue
 
-                logger.info(f"Found {len(papers)} papers on arXiv for: {query}")
-                return papers
+                    response.raise_for_status()
 
-            except httpx.HTTPError as e:
-                logger.error(f"Error searching arXiv: {e}")
-                return []
-            except Exception as e:
-                logger.error(f"Unexpected error in arXiv search: {e}")
-                return []
+                    # Parse Atom XML response
+                    papers = self._parse_arxiv_response(response.text)
+
+                    logger.info(f"Found {len(papers)} papers on arXiv for: {query}")
+                    if papers:
+                        print(f"  📄 Found {len(papers)} papers from arXiv")
+                    return papers
+
+                except httpx.HTTPStatusError as e:
+                    if e.response.status_code == 429 and attempt < ARXIV_MAX_RETRIES - 1:
+                        delay = ARXIV_BASE_DELAY * (2 ** attempt)
+                        await asyncio.sleep(delay)
+                        continue
+                    logger.error(f"Error searching arXiv: {e}")
+                    print(f"  ⚠️ arXiv error: {e}")
+                    return []
+                except httpx.HTTPError as e:
+                    logger.error(f"Error searching arXiv: {e}")
+                    return []
+                except Exception as e:
+                    logger.error(f"Unexpected error in arXiv search: {e}")
+                    return []
+
+            # All retries exhausted
+            logger.error(f"arXiv rate limit exceeded after {ARXIV_MAX_RETRIES} retries")
+            print(f"  ❌ arXiv rate limit exceeded after {ARXIV_MAX_RETRIES} retries")
+            return []
 
     def _parse_arxiv_response(self, xml_text: str) -> List[Paper]:
         """

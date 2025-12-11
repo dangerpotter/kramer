@@ -46,7 +46,7 @@ class HypothesisAgent:
         world_model: WorldModel,
         api_key: Optional[str] = None,
         max_hypotheses: int = 5,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = None,
         max_tokens: int = 8000,
     ):
         """
@@ -61,7 +61,7 @@ class HypothesisAgent:
         """
         self.world_model = world_model
         self.max_hypotheses = max_hypotheses
-        self.model = model
+        self.model = model or os.getenv("CLAUDE_MODEL")
         self.max_tokens = max_tokens
 
         # Get API key from parameter or environment

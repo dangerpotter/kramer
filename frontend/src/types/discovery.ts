@@ -1,6 +1,7 @@
 export interface DiscoveryConfig {
   objective: string
   dataset_path?: string
+  model?: string
   max_cycles: number
   max_total_budget: number
   max_parallel_tasks: number
