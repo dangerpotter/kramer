@@ -625,9 +625,10 @@ Create 2-4 tasks that would best advance this research objective."""
                 print("No conditions met for spawning new cycle. Discovery loop complete.")
                 break
 
-            # Check budget
+            # Check budget - use minimum viable threshold instead of full cycle budget
             budget_remaining = self.max_total_budget - self.total_budget_used
-            if budget_remaining < self.max_cycle_budget:
+            MIN_VIABLE_BUDGET = 0.10  # $0.10 minimum to attempt another cycle
+            if budget_remaining < MIN_VIABLE_BUDGET:
                 print(f"Insufficient budget remaining (${budget_remaining:.2f}). Stopping discovery loop.")
                 break
 
@@ -1033,9 +1034,10 @@ Create 2-4 tasks that would best advance this research objective."""
         Returns:
             True if a new cycle should be spawned
         """
-        # Check if we have budget remaining
+        # Check if we have budget remaining - use minimum viable threshold
         budget_remaining = self.max_total_budget - self.total_budget_used
-        if budget_remaining < self.max_cycle_budget:
+        MIN_VIABLE_BUDGET = 0.10  # $0.10 minimum to attempt another cycle
+        if budget_remaining < MIN_VIABLE_BUDGET:
             print(f"Insufficient budget for new cycle: ${budget_remaining:.2f} remaining")
             return False
 

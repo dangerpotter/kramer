@@ -67,12 +67,17 @@ class KramerBridge:
         self.world_models[discovery_id] = world_model
 
         # Create orchestrator
+        # Compute sensible default cycle budget from total budget and max cycles
+        total_budget = config.get("max_total_budget", 100.0)
+        max_cycles = config.get("max_cycles", 20)
+        default_cycle_budget = total_budget / max(max_cycles, 1)
+
         orchestrator = Orchestrator(
             world_model=world_model,
             max_concurrent_tasks=config.get("max_parallel_tasks", 3),
-            default_budget=config.get("max_total_budget", 100.0),
-            max_cycle_budget=config.get("max_cycle_budget", 10.0),
-            max_total_budget=config.get("max_total_budget", 100.0),
+            default_budget=total_budget,
+            max_cycle_budget=config.get("max_cycle_budget", default_cycle_budget),
+            max_total_budget=total_budget,
         )
         self.orchestrators[discovery_id] = orchestrator
 
