@@ -454,8 +454,8 @@ Create 2-4 tasks that would best advance this research objective."""
                     # Skip invalid task types
                     continue
 
-                objective = task_dict.get("objective", "")
-                context = task_dict.get("context", {})
+                objective = str(task_dict.get("objective", ""))
+                context = task_dict.get("context", {}) if isinstance(task_dict.get("context"), dict) else {}
 
                 tasks.append((task_type, objective, context))
 
@@ -829,7 +829,8 @@ Create 2-4 tasks that would best advance this research objective."""
         task.started_at = datetime.utcnow()
 
         # Log task start
-        task_info = task.context.get("hypothesis_id", task.objective[:50] if task.objective else "")[:50]
+        objective_str = str(task.objective) if task.objective else ""
+        task_info = task.context.get("hypothesis_id", objective_str[:50] if objective_str else "")[:50]
         print(f"  [TASK] Starting {task.task_type.value}: {task_info}...")
 
         # Add to active tasks
