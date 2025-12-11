@@ -35,6 +35,10 @@ export function useWebSocket(discoveryId: string) {
     ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data) as WebSocketMessage
+        // Filter out pong/heartbeat messages - they're just keep-alive signals
+        if (message.type === 'pong') {
+          return
+        }
         setMessages((prev) => [...prev, message])
       } catch (error) {
         console.error('Error parsing WebSocket message:', error)

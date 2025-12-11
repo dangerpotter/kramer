@@ -8,6 +8,34 @@ import CycleTimeline from '@/components/dashboard/CycleTimeline'
 import TaskBreakdown from '@/components/dashboard/TaskBreakdown'
 import { Activity, DollarSign, FileSearch, FlaskConical, StopCircle } from 'lucide-react'
 
+// Transform metrics data for CostChart
+function transformCostData(metrics: any) {
+  if (!metrics?.cost_per_cycle || metrics.cost_per_cycle.length === 0) {
+    return []
+  }
+  let cumulative = 0
+  return metrics.cost_per_cycle.map((cost: number, index: number) => {
+    cumulative += cost
+    return {
+      cycle: index + 1,
+      cost: cost,
+      cumulative: cumulative
+    }
+  })
+}
+
+// Transform metrics data for CycleTimeline
+function transformCycleData(metrics: any) {
+  if (!metrics?.cost_per_cycle || metrics.cost_per_cycle.length === 0) {
+    return []
+  }
+  return metrics.cost_per_cycle.map((_: number, index: number) => ({
+    cycle_number: index + 1,
+    findings_added: metrics.findings_per_cycle?.[index] || 0,
+    tasks_completed: Math.round((metrics.tasks_completed || 0) / metrics.cost_per_cycle.length)
+  }))
+}
+
 export default function Dashboard() {
   const { discoveryId } = useParams<{ discoveryId: string }>()
   const { data: status, isLoading } = useDiscovery(discoveryId!)
@@ -86,11 +114,11 @@ export default function Dashboard() {
 
       {/* Charts Section */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <CostChart data={metrics?.cost_history || []} />
-        <CycleTimeline cycles={metrics?.cycles || []} />
+        <CostChart data={transformCostData(metrics)} />
+        <CycleTimeline cycles={transformCycleData(metrics)} />
       </div>
 
-      <TaskBreakdown tasks={metrics?.tasks || []} />
+      <TaskBreakdown tasks={[]} /> {/* TODO: Need task list from cycles endpoint */}
 
       {/* Live Feed */}
       <Card title="Live Activity Feed" subtitle="Real-time updates from the discovery process">

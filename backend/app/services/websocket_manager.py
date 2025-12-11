@@ -2,13 +2,38 @@
 WebSocket manager for real-time updates to connected clients.
 """
 
-from typing import Dict, List
+from typing import Dict, List, Any
 from fastapi import WebSocket
 import json
 import asyncio
 from datetime import datetime
 
 from app.core.events import Event
+
+
+def serialize_data(data: Any) -> Any:
+    """
+    Recursively serialize data to make it JSON-compatible.
+
+    Handles dataclass objects with to_dict() methods, lists, and dicts.
+    """
+    if data is None:
+        return None
+
+    # If object has to_dict method, use it
+    if hasattr(data, "to_dict") and callable(data.to_dict):
+        return data.to_dict()
+
+    # Handle lists
+    if isinstance(data, list):
+        return [serialize_data(item) for item in data]
+
+    # Handle dicts
+    if isinstance(data, dict):
+        return {key: serialize_data(value) for key, value in data.items()}
+
+    # Return as-is for primitives (str, int, float, bool)
+    return data
 
 
 class ConnectionManager:
@@ -95,7 +120,7 @@ class ConnectionManager:
             "type": event.event_type,
             "discovery_id": event.discovery_id,
             "timestamp": event.timestamp.isoformat(),
-            "data": event.data,
+            "data": serialize_data(event.data),
         }
         await self.broadcast(event.discovery_id, message)
 

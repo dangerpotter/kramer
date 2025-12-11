@@ -6,7 +6,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from kramer.data_analysis_agent import DataAnalysisAgent, AgentConfig
+from src.kramer.data_analysis_agent import DataAnalysisAgent, AgentConfig
 
 
 def main():

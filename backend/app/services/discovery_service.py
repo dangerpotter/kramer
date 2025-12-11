@@ -145,7 +145,7 @@ class DiscoveryService:
             return []
 
         cycles = []
-        for i, cycle in enumerate(cycle_manager.cycles):
+        for i, cycle in enumerate(cycle_manager.cycles.values()):
             tasks = [
                 TaskStatusInfo(
                     task_id=task.task_id,

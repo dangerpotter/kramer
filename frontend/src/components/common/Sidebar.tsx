@@ -13,6 +13,18 @@ const navItems = [
 export default function Sidebar() {
   const location = useLocation()
 
+  // Extract discovery ID from current path (e.g., /dashboard/abc-123 -> abc-123)
+  const pathParts = location.pathname.split('/')
+  const currentDiscoveryId = pathParts.length > 2 ? pathParts[2] : null
+
+  // Build the correct path, preserving discovery ID for pages that need it
+  const getNavPath = (item: typeof navItems[0]) => {
+    if (item.requiresId && currentDiscoveryId) {
+      return `${item.path}/${currentDiscoveryId}`
+    }
+    return item.path
+  }
+
   return (
     <aside className="w-64 bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700">
       <div className="flex flex-col h-full">
@@ -33,7 +45,7 @@ export default function Sidebar() {
             return (
               <Link
                 key={item.path}
-                to={item.path}
+                to={getNavPath(item)}
                 className={cn(
                   'flex items-center space-x-3 px-4 py-3 rounded-lg transition-colors',
                   isActive

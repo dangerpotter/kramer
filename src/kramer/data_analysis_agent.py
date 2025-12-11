@@ -9,9 +9,9 @@ from dataclasses import dataclass
 import json
 import anthropic
 
-from kramer.code_executor import CodeExecutor, ExecutionResult
-from kramer.result_parser import ResultParser, AnalysisResults
-from kramer.notebook_manager import NotebookManager
+from src.kramer.code_executor import CodeExecutor, ExecutionResult
+from src.kramer.result_parser import ResultParser, AnalysisResults
+from src.kramer.notebook_manager import NotebookManager
 from src.utils.cost_tracker import CostTracker
 
 

@@ -13,7 +13,7 @@ import asyncio
 # Add parent directory to path to import Kramer modules
 sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
-from src.orchestrator.cycle_manager import CycleManager
+from src.orchestrator.cycle_manager import Orchestrator
 from src.world_model.graph import WorldModel, NodeType, EdgeType
 from app.core.events import Event, EventType, create_event
 
@@ -22,13 +22,13 @@ class KramerBridge:
     """
     Bridge between FastAPI and existing Kramer components.
 
-    This class manages the lifecycle of CycleManager instances and provides
+    This class manages the lifecycle of Orchestrator instances and provides
     methods to interact with them via the web API.
     """
 
     def __init__(self):
         """Initialize the bridge."""
-        self.cycle_managers: Dict[str, CycleManager] = {}
+        self.orchestrators: Dict[str, Orchestrator] = {}
         self.world_models: Dict[str, WorldModel] = {}
         self.event_callbacks: Dict[str, Callable] = {}
         self.discovery_configs: Dict[str, dict] = {}
@@ -66,17 +66,15 @@ class KramerBridge:
         world_model = WorldModel(db_path=db_path)
         self.world_models[discovery_id] = world_model
 
-        # Create cycle manager
-        cycle_manager = CycleManager(
-            objective=config["objective"],
-            dataset_path=config.get("dataset_path"),
-            max_cycles=config.get("max_cycles", 20),
-            max_total_budget=config.get("max_total_budget", 100.0),
+        # Create orchestrator
+        orchestrator = Orchestrator(
             world_model=world_model,
-            enable_checkpointing=config.get("enable_checkpointing", True),
-            checkpoint_interval=config.get("checkpoint_interval", 5),
+            max_concurrent_tasks=config.get("max_parallel_tasks", 3),
+            default_budget=config.get("max_total_budget", 100.0),
+            max_cycle_budget=config.get("max_cycle_budget", 10.0),
+            max_total_budget=config.get("max_total_budget", 100.0),
         )
-        self.cycle_managers[discovery_id] = cycle_manager
+        self.orchestrators[discovery_id] = orchestrator
 
         # Emit discovery started event
         if event_callback:
@@ -97,16 +95,21 @@ class KramerBridge:
         Returns:
             Final result dictionary
         """
-        cycle_manager = self.cycle_managers.get(discovery_id)
-        if not cycle_manager:
+        orchestrator = self.orchestrators.get(discovery_id)
+        if not orchestrator:
             raise ValueError(f"Discovery {discovery_id} not found")
 
         try:
-            # Attach event hooks to CycleManager
-            self._attach_event_hooks(discovery_id, cycle_manager)
+            # Attach event hooks to Orchestrator
+            self._attach_event_hooks(discovery_id, orchestrator)
 
             # Run the discovery
-            result = await cycle_manager.run()
+            config = self.discovery_configs.get(discovery_id, {})
+            result = await orchestrator.run_cycle(
+                objective=config.get("objective", "Research objective"),
+                max_cycles=config.get("max_cycles", 20),
+                budget=config.get("max_total_budget", 100.0)
+            )
 
             # Emit completion event
             event = create_event(
@@ -128,9 +131,9 @@ class KramerBridge:
             await self._emit_event(discovery_id, event)
             raise
 
-    def _attach_event_hooks(self, discovery_id: str, cycle_manager: CycleManager) -> None:
-        """Attach event hooks to CycleManager for real-time updates."""
-        # Note: This would require modifying CycleManager to support callbacks
+    def _attach_event_hooks(self, discovery_id: str, orchestrator: Orchestrator) -> None:
+        """Attach event hooks to Orchestrator for real-time updates."""
+        # Note: This would require modifying Orchestrator to support callbacks
         # For now, we'll emit events at key points
         pass
 
@@ -161,13 +164,17 @@ class KramerBridge:
         )
         await self._emit_event(discovery_id, event)
 
-    def get_cycle_manager(self, discovery_id: str) -> Optional[CycleManager]:
-        """Get CycleManager instance for a discovery."""
-        return self.cycle_managers.get(discovery_id)
+    def get_orchestrator(self, discovery_id: str) -> Optional[Orchestrator]:
+        """Get Orchestrator instance for a discovery."""
+        return self.orchestrators.get(discovery_id)
 
     def get_world_model(self, discovery_id: str) -> Optional[WorldModel]:
         """Get WorldModel instance for a discovery."""
         return self.world_models.get(discovery_id)
+
+    def get_cycle_manager(self, discovery_id: str) -> Optional[Orchestrator]:
+        """Get the orchestrator (cycle manager) for a discovery session."""
+        return self.orchestrators.get(discovery_id)
 
     def get_discovery_status(self, discovery_id: str) -> dict:
         """
@@ -176,8 +183,8 @@ class KramerBridge:
         Returns:
             Status dictionary with current metrics
         """
-        cycle_manager = self.cycle_managers.get(discovery_id)
-        if not cycle_manager:
+        orchestrator = self.orchestrators.get(discovery_id)
+        if not orchestrator:
             return {"status": "not_found"}
 
         world_model = self.world_models.get(discovery_id)
@@ -201,8 +208,8 @@ class KramerBridge:
         return {
             "discovery_id": discovery_id,
             "status": "running" if discovery_id in self._tasks else "idle",
-            "current_cycle": len(cycle_manager.cycles),
-            "total_cost": sum(c.budget_used for c in cycle_manager.cycles),
+            "current_cycle": len(orchestrator.cycles),
+            "total_cost": orchestrator.total_budget_used,
             "findings_count": findings_count,
             "hypotheses_count": hypotheses_count,
             "papers_count": papers_count,
@@ -210,7 +217,7 @@ class KramerBridge:
 
     def cleanup_discovery(self, discovery_id: str) -> None:
         """Clean up resources for a discovery."""
-        self.cycle_managers.pop(discovery_id, None)
+        self.orchestrators.pop(discovery_id, None)
         self.world_models.pop(discovery_id, None)
         self.event_callbacks.pop(discovery_id, None)
         self.discovery_configs.pop(discovery_id, None)

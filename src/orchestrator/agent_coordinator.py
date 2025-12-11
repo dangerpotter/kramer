@@ -18,15 +18,8 @@ from src.kramer.hypothesis_tester_agent import HypothesisTesterAgent
 from src.orchestrator.cycle_manager import Task
 from src.world_model.graph import EdgeType, NodeType, WorldModel
 
-# Import LiteratureAgent - try multiple paths as it may be in different locations
-try:
-    from kramer.literature_agent import LiteratureAgent
-except ImportError:
-    try:
-        from kramer.agents.literature import LiteratureAgent
-    except ImportError:
-        # If neither import works, we'll create a simple fallback
-        LiteratureAgent = None
+# Import LiteratureAgent
+from src.kramer.literature_agent import LiteratureAgent
 
 
 @dataclass
@@ -203,13 +196,13 @@ class AgentCoordinator:
             hypothesis = task.context.get("hypothesis")
             max_papers = task.context.get("max_papers", 5)
 
-            # Run in thread pool to avoid blocking (if agent has blocking operations)
+            # Run async methods directly (they're already async)
             if hypothesis:
                 # Search for hypothesis validation
-                result = await asyncio.to_thread(agent.search_for_hypothesis, hypothesis)
+                result = await agent.search_for_hypothesis(hypothesis)
             else:
                 # General search based on objective
-                papers = await asyncio.to_thread(agent.search, task.objective, max_results=max_papers)
+                papers = await agent.search(task.objective, max_results=max_papers)
                 result = {
                     "task": "literature_search",
                     "query": task.objective,

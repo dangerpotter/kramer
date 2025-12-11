@@ -15,8 +15,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY backend/app/ ./app/
 
-# Copy Kramer source code
+# Copy Kramer source code and setup files for installation
+COPY pyproject.toml setup.py README.md /
 COPY src/ /src/
+
+# Install Kramer package from root
+RUN pip install --no-cache-dir -e /
 
 # Create directories for data and outputs
 RUN mkdir -p /app/data /app/outputs /app/data/uploads /app/data/discoveries
