@@ -12,6 +12,14 @@ interface TaskBreakdownProps {
 
 const COLORS = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4']
 
+// Format task type: "search_literature" → "Search Literature"
+const formatTaskType = (type: string): string => {
+  return type
+    .split('_')
+    .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ')
+}
+
 export default function TaskBreakdown({ tasks }: TaskBreakdownProps) {
   if (!tasks || tasks.length === 0) {
     return (
@@ -31,7 +39,7 @@ export default function TaskBreakdown({ tasks }: TaskBreakdownProps) {
   }, {})
 
   const data = Object.entries(taskCounts).map(([type, count]) => ({
-    name: type,
+    name: formatTaskType(type),
     value: count as number
   }))
 
@@ -43,6 +51,9 @@ export default function TaskBreakdown({ tasks }: TaskBreakdownProps) {
     outerRadius,
     percent
   }: any) => {
+    // Only show label for slices >= 5% to prevent bleeding
+    if (percent < 0.05) return null
+
     const RADIAN = Math.PI / 180
     const radius = innerRadius + (outerRadius - innerRadius) * 0.5
     const x = cx + radius * Math.cos(-midAngle * RADIAN)
@@ -53,10 +64,10 @@ export default function TaskBreakdown({ tasks }: TaskBreakdownProps) {
         x={x}
         y={y}
         fill="white"
-        textAnchor={x > cx ? 'start' : 'end'}
+        textAnchor="middle"
         dominantBaseline="central"
-        fontSize="12"
-        fontWeight="bold"
+        fontSize="11"
+        fontWeight="600"
       >
         {`${(percent * 100).toFixed(0)}%`}
       </text>
@@ -84,11 +95,13 @@ export default function TaskBreakdown({ tasks }: TaskBreakdownProps) {
           </Pie>
           <Tooltip
             contentStyle={{
-              backgroundColor: '#1f2937',
-              border: '1px solid #374151',
+              backgroundColor: 'rgba(255, 255, 255, 0.95)',
+              border: '1px solid #e5e7eb',
               borderRadius: '0.5rem',
-              color: '#f9fafb'
+              color: '#1f2937',
+              boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
             }}
+            itemStyle={{ color: '#374151' }}
           />
           <Legend
             verticalAlign="bottom"

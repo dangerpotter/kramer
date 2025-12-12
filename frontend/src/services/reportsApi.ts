@@ -2,35 +2,43 @@ import api from './api'
 
 export interface Report {
   id: string
-  name: string
+  cycle_id: string
   discovery_id: string
+  summary: string
+  tasks_completed: number
+  findings_count: number
+  hypotheses_count: number
+  papers_count: number
+  budget_used: number
+  generation_cost: number
   created_at: string
-  file_path?: string
+  is_final_report?: boolean
 }
 
-export interface ReportContent {
-  content: string
-  metadata?: Record<string, any>
-}
-
-interface ReportsResponse {
-  reports: Report[]
+interface CycleReportsResponse {
+  cycle_reports: Report[]
   count: number
 }
 
+interface CycleReportContentResponse {
+  full_content: string
+}
+
 export const reportsApi = {
-  // Get all reports for a discovery
+  // Get all cycle reports for a discovery
   async getReports(discoveryId: string): Promise<Report[]> {
-    const { data } = await api.get<ReportsResponse>(`/api/v1/reports/${discoveryId}`)
-    return data.reports || []
+    const { data } = await api.get<CycleReportsResponse>(
+      `/api/v1/reports/${discoveryId}/cycle-reports`
+    )
+    return data.cycle_reports || []
   },
 
-  // Get report content
-  async getReportContent(discoveryId: string, reportId: string): Promise<string> {
-    const { data } = await api.get<ReportContent>(
-      `/api/v1/reports/${discoveryId}/${reportId}`
+  // Get cycle report content
+  async getReportContent(discoveryId: string, cycleId: string): Promise<string> {
+    const { data } = await api.get<CycleReportContentResponse>(
+      `/api/v1/reports/${discoveryId}/cycle-reports/${cycleId}`
     )
-    return data.content
+    return data.full_content
   },
 
   // Generate a new report

@@ -44,6 +44,17 @@ class TaskType(str, Enum):
     SYNTHESIZE_FINDINGS = "synthesize_findings"
 
 
+class CycleType(str, Enum):
+    """Types of discovery cycles."""
+    EXPLORATION = "exploration"     # Normal exploration cycle
+    SYNTHESIS = "synthesis"         # Meta-analysis and synthesis cycle
+    PIVOT = "pivot"                 # Redirecting to unexplored aspects
+    # TODO: Future cycle types to consider:
+    # VALIDATION = "validation"     # Focused on validating existing hypotheses
+    # DEEP_DIVE = "deep_dive"       # Deep exploration of a specific topic
+    # CONTRADICTION = "contradiction"  # Resolving conflicting findings
+
+
 @dataclass
 class Task:
     """Represents a single task in a discovery cycle."""
@@ -88,6 +99,8 @@ class Cycle:
     completed_at: Optional[datetime] = None
     max_tasks: int = 10
     budget_used: float = 0.0
+    cycle_type: CycleType = CycleType.EXPLORATION  # Type of cycle
+    parent_cycle_id: Optional[str] = None  # For tracking cycle lineage
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert cycle to dictionary."""
@@ -101,6 +114,8 @@ class Cycle:
             "completed_at": self.completed_at.isoformat() if self.completed_at else None,
             "max_tasks": self.max_tasks,
             "budget_used": self.budget_used,
+            "cycle_type": self.cycle_type.value,
+            "parent_cycle_id": self.parent_cycle_id,
         }
 
 
@@ -397,6 +412,10 @@ class Orchestrator:
         # Get previous cycle context
         previous_cycle_context = self._get_previous_cycle_summaries()
 
+        # Use specialized planning for synthesis cycles
+        if cycle.cycle_type == CycleType.SYNTHESIS:
+            return self._plan_synthesis_tasks(cycle, world_model_summary, previous_cycle_context)
+
         # Create prompt for Claude
         prompt = f"""Given this research objective and current world model state, create a task decomposition plan.
 
@@ -521,14 +540,6 @@ Create 2-4 tasks that would best advance this research objective."""
         objective = cycle.objective.lower()
         tasks = []
 
-        # If objective mentions data or analysis
-        if any(word in objective for word in ["data", "analyze", "dataset"]):
-            tasks.append((
-                TaskType.ANALYZE_DATA,
-                f"Analyze data related to: {cycle.objective}",
-                {"requires_dataset": True},
-            ))
-
         # If objective mentions literature or papers
         if any(word in objective for word in ["literature", "papers", "research"]):
             tasks.append((
@@ -554,6 +565,77 @@ Create 2-4 tasks that would best advance this research objective."""
 
         return tasks
 
+    def _plan_synthesis_tasks(
+        self,
+        cycle: Cycle,
+        world_model_summary: Dict[str, Any],
+        previous_cycle_context: str
+    ) -> List[tuple]:
+        """
+        Plan tasks for a synthesis cycle.
+
+        Synthesis cycles focus on:
+        1. Consolidating findings into coherent insights
+        2. Identifying gaps and contradictions
+        3. Generating new hypotheses based on synthesis
+        4. Suggesting pivot directions for future exploration
+
+        Args:
+            cycle: The synthesis cycle to plan for
+            world_model_summary: Current world model state
+            previous_cycle_context: Summary of previous cycles
+
+        Returns:
+            List of tuples (task_type, objective, context)
+        """
+        tasks = []
+
+        # Primary task: Synthesize all current findings
+        tasks.append((
+            TaskType.SYNTHESIZE_FINDINGS,
+            f"Meta-analysis: Synthesize all findings and identify key insights for: {cycle.objective}",
+            {
+                "synthesis_type": "comprehensive",
+                "include_confidence_analysis": True,
+                # TODO: Future enhancement - add contradiction detection
+                # TODO: Future enhancement - add coverage analysis vs original objective
+            },
+        ))
+
+        # If we have findings but few hypotheses, generate new hypotheses
+        if world_model_summary["finding_count"] > 3 and world_model_summary["hypothesis_count"] < 5:
+            tasks.append((
+                TaskType.GENERATE_HYPOTHESIS,
+                "Generate hypotheses based on synthesized findings",
+                {
+                    "focus": "synthesis_derived",
+                    "min_novelty": 0.5,
+                },
+            ))
+
+        # If we have untested hypotheses, prioritize testing the highest confidence ones
+        if world_model_summary["recent_hypotheses"]:
+            # Sort by confidence and test top hypothesis
+            sorted_hypotheses = sorted(
+                world_model_summary["recent_hypotheses"],
+                key=lambda h: h.get("confidence", 0),
+                reverse=True
+            )
+            if sorted_hypotheses:
+                top_hypothesis = sorted_hypotheses[0]
+                tasks.append((
+                    TaskType.TEST_HYPOTHESIS,
+                    f"Test high-priority hypothesis: {top_hypothesis['text'][:80]}",
+                    {"hypothesis_id": top_hypothesis["id"]},
+                ))
+
+        # TODO: Future enhancement - add task to identify knowledge gaps
+        # TODO: Future enhancement - add task to suggest pivots to unexplored areas
+        # TODO: Future enhancement - add task to reconcile contradictory findings
+        # TODO: Future enhancement - use Claude to intelligently plan synthesis tasks
+
+        return tasks
+
     def _get_world_model_summary(self) -> Dict[str, Any]:
         """Get a summary of the current world model state."""
         summary = {
@@ -571,12 +653,16 @@ Create 2-4 tasks that would best advance this research objective."""
 
             if node_type == "hypothesis":
                 summary["hypothesis_count"] += 1
-                if len(summary["recent_hypotheses"]) < 5:
-                    summary["recent_hypotheses"].append({
-                        "id": node_id,  # Include hypothesis ID for TEST_HYPOTHESIS tasks
-                        "text": data.get("text", ""),
-                        "confidence": data.get("confidence", 0.0),
-                    })
+                # Only include hypotheses that haven't been conclusively tested
+                metadata = data.get("metadata", {})
+                test_outcome = metadata.get("test_outcome", "")
+                if test_outcome not in ["supported", "refuted"]:
+                    if len(summary["recent_hypotheses"]) < 5:
+                        summary["recent_hypotheses"].append({
+                            "id": node_id,  # Include hypothesis ID for TEST_HYPOTHESIS tasks
+                            "text": data.get("text", ""),
+                            "confidence": data.get("confidence", 0.0),
+                        })
 
             elif node_type == "finding":
                 summary["finding_count"] += 1
@@ -818,6 +904,38 @@ Create 2-4 tasks that would best advance this research objective."""
             print(f"✅ Final report generated: {output_path}")
             print(f"   Report cost: ${report_cost:.2f}")
             print(f"   Total cost (including report): ${self.total_budget_used:.2f}")
+
+            # Save final report to database for UI access
+            if self.persistence_service and self.discovery_id:
+                try:
+                    # Read the generated report content
+                    with open(output_path, "r", encoding="utf-8") as f:
+                        full_content = f.read()
+
+                    # Extract summary from first non-heading paragraph
+                    lines = full_content.split('\n')
+                    summary = "Final discovery report with complete findings and conclusions"
+                    for line in lines:
+                        if line.strip() and not line.startswith('#'):
+                            summary = line.strip()[:300]
+                            break
+
+                    # Save to database with special cycle_id "final_report"
+                    await self.persistence_service.save_cycle_report(
+                        discovery_id=self.discovery_id,
+                        cycle_id="final_report",
+                        summary=summary,
+                        full_content=full_content,
+                        tasks_completed=0,
+                        findings_count=result.get("total_findings", 0),
+                        hypotheses_count=0,
+                        papers_count=0,
+                        budget_used=self.total_budget_used,
+                        generation_cost=report_cost,
+                    )
+                    print("   📊 Final report saved to database")
+                except Exception as db_err:
+                    print(f"   ⚠️  Failed to save final report to database: {db_err}")
 
             return {
                 "report_path": str(output_path),
@@ -1253,6 +1371,182 @@ Create 2-4 tasks that would best advance this research objective."""
                     count += 1
         return count
 
+    def _check_recent_progress(self, num_cycles: int = 3) -> Dict[str, Any]:
+        """
+        Check if meaningful progress has been made in recent cycles.
+
+        This prevents the system from spawning new cycles when it's stuck
+        in an unproductive loop.
+
+        Args:
+            num_cycles: Number of recent cycles to check
+
+        Returns:
+            Dictionary with progress metrics and has_progress flag
+        """
+        # Get the most recent completed cycles
+        completed_cycles = [
+            c for c in self.cycles.values()
+            if c.status in [TaskStatus.COMPLETED, TaskStatus.FAILED] and c.started_at
+        ]
+        sorted_cycles = sorted(
+            completed_cycles,
+            key=lambda c: c.started_at,
+            reverse=True
+        )[:num_cycles]
+
+        if len(sorted_cycles) < num_cycles:
+            # Not enough cycles to judge - allow spawning
+            return {
+                "has_progress": True,
+                "cycles_checked": len(sorted_cycles),
+                "total_findings": 0,
+                "hypotheses_tested": 0,
+                "novel_findings": 0,
+                "reason": "Not enough cycles to evaluate"
+            }
+
+        # Count progress metrics across recent cycles
+        total_findings = 0
+        hypotheses_tested = 0
+        novel_findings = 0
+        novelty_threshold = 0.5  # Lower threshold for progress check
+
+        # Get the start time of the oldest cycle we're checking
+        oldest_start = sorted_cycles[-1].started_at
+
+        for node_id, data in self.world_model.graph.nodes(data=True):
+            node_created = data.get("created_at")
+            if not node_created:
+                continue
+
+            # Parse datetime if string
+            if isinstance(node_created, str):
+                try:
+                    node_created = datetime.fromisoformat(node_created)
+                except (ValueError, AttributeError):
+                    continue
+
+            # Only count nodes created during the cycles we're checking
+            if node_created < oldest_start:
+                continue
+
+            node_type = data.get("node_type")
+
+            if node_type == "finding":
+                total_findings += 1
+                novelty = data.get("metadata", {}).get("novelty", 0.0)
+                if novelty > novelty_threshold:
+                    novel_findings += 1
+
+            elif node_type == "hypothesis":
+                metadata = data.get("metadata", {})
+                if metadata.get("tested", False):
+                    hypotheses_tested += 1
+
+        # Determine if there's meaningful progress
+        # Progress requires at least ONE of:
+        # - 2+ findings created
+        # - 1+ hypothesis tested
+        # - 1+ novel finding
+        has_progress = (
+            total_findings >= 2 or
+            hypotheses_tested >= 1 or
+            novel_findings >= 1
+        )
+
+        return {
+            "has_progress": has_progress,
+            "cycles_checked": len(sorted_cycles),
+            "total_findings": total_findings,
+            "hypotheses_tested": hypotheses_tested,
+            "novel_findings": novel_findings,
+            "reason": "Sufficient progress" if has_progress else "Insufficient progress in recent cycles"
+        }
+
+    def _should_trigger_synthesis_cycle(self) -> Dict[str, Any]:
+        """
+        Check if a synthesis cycle should be triggered.
+
+        Synthesis cycles are triggered:
+        - Every N exploration cycles (default: 5)
+        - When progress has stalled but we haven't hit budget limits
+        - When there are contradictory findings that need reconciliation
+
+        Returns:
+            Dictionary with should_trigger flag and reason
+        """
+        SYNTHESIS_INTERVAL = 5  # Trigger synthesis every 5 exploration cycles
+
+        # Count completed exploration cycles since last synthesis
+        completed_cycles = [
+            c for c in self.cycles.values()
+            if c.status == TaskStatus.COMPLETED
+        ]
+        sorted_cycles = sorted(
+            completed_cycles,
+            key=lambda c: c.created_at,
+            reverse=True
+        )
+
+        # Find last synthesis cycle
+        last_synthesis_idx = -1
+        for i, cycle in enumerate(sorted_cycles):
+            if cycle.cycle_type == CycleType.SYNTHESIS:
+                last_synthesis_idx = i
+                break
+
+        # Count exploration cycles since last synthesis
+        if last_synthesis_idx == -1:
+            cycles_since_synthesis = len([c for c in sorted_cycles if c.cycle_type == CycleType.EXPLORATION])
+        else:
+            cycles_since_synthesis = len([
+                c for c in sorted_cycles[:last_synthesis_idx]
+                if c.cycle_type == CycleType.EXPLORATION
+            ])
+
+        # Check if we should trigger synthesis
+        should_trigger = cycles_since_synthesis >= SYNTHESIS_INTERVAL
+
+        # TODO: Future enhancement - detect contradictory findings and trigger synthesis
+        # TODO: Future enhancement - trigger synthesis when coverage of original objective is imbalanced
+        # TODO: Future enhancement - use Claude to assess if synthesis would be valuable
+
+        return {
+            "should_trigger": should_trigger,
+            "cycles_since_synthesis": cycles_since_synthesis,
+            "synthesis_interval": SYNTHESIS_INTERVAL,
+            "reason": f"Synthesis due after {SYNTHESIS_INTERVAL} exploration cycles" if should_trigger else "Not due for synthesis"
+        }
+
+    def _create_synthesis_objective(self) -> str:
+        """
+        Create an objective for a synthesis cycle based on current state.
+
+        Returns:
+            Synthesis cycle objective string
+        """
+        # Get current state summary
+        summary = self._get_world_model_summary()
+
+        # TODO: Future enhancement - use Claude to generate more intelligent synthesis objectives
+        # TODO: Future enhancement - identify which aspects of original objective are under-explored
+        # TODO: Future enhancement - identify contradictions that need resolution
+
+        base_objective = "Synthesize and evaluate current knowledge"
+
+        # Add context about what we have
+        context_parts = []
+        if summary["finding_count"] > 0:
+            context_parts.append(f"{summary['finding_count']} findings")
+        if summary["hypothesis_count"] > 0:
+            context_parts.append(f"{summary['hypothesis_count']} hypotheses")
+
+        if context_parts:
+            base_objective = f"{base_objective}: {', '.join(context_parts)}"
+
+        return base_objective
+
     def _should_spawn_new_cycle(self, current_cycle: Cycle) -> bool:
         """
         Determine if a new discovery cycle should be spawned.
@@ -1261,6 +1555,7 @@ Create 2-4 tasks that would best advance this research objective."""
         - New hypotheses added since cycle start
         - Novel findings exceed threshold
         - Budget remaining > minimum cycle budget
+        - Progress gating: at least some progress in recent cycles
 
         Args:
             current_cycle: The cycle that just completed
@@ -1274,6 +1569,17 @@ Create 2-4 tasks that would best advance this research objective."""
         if budget_remaining < MIN_VIABLE_BUDGET:
             print(f"Insufficient budget for new cycle: ${budget_remaining:.2f} remaining "
                   f"(reserving ${FINAL_REPORT_BUDGET_RESERVE:.2f} for final report)")
+            return False
+
+        # Progress gating: check if we've made progress in recent cycles
+        # This prevents infinite loops of unproductive cycles
+        recent_progress = self._check_recent_progress(num_cycles=3)
+        if not recent_progress["has_progress"]:
+            print(f"⚠️  Progress gating triggered: No meaningful progress in last {recent_progress['cycles_checked']} cycles")
+            print(f"   - Findings in recent cycles: {recent_progress['total_findings']}")
+            print(f"   - Hypotheses tested: {recent_progress['hypotheses_tested']}")
+            print(f"   - Novel findings: {recent_progress['novel_findings']}")
+            # TODO: Future enhancement - instead of stopping, trigger a synthesis/pivot cycle (Fix 10)
             return False
 
         # Count new hypotheses added during this cycle
@@ -1358,6 +1664,12 @@ Create 2-4 tasks that would best advance this research objective."""
         Returns:
             New Cycle object linked to parent
         """
+        # Check if we should trigger a synthesis cycle instead
+        synthesis_check = self._should_trigger_synthesis_cycle()
+        if synthesis_check["should_trigger"]:
+            print(f"🔄 Triggering synthesis cycle: {synthesis_check['reason']}")
+            return self._create_synthesis_cycle(parent_cycle)
+
         # Query world model for recent high-confidence findings
         recent_findings = []
         recent_hypotheses = []
@@ -1388,6 +1700,9 @@ Create 2-4 tasks that would best advance this research objective."""
                             "confidence": data.get("confidence", 0.0),
                         })
 
+        # Determine cycle type based on situation
+        cycle_type = CycleType.EXPLORATION
+
         # Generate new objective based on findings
         if recent_hypotheses:
             # Focus on testing new hypotheses
@@ -1398,20 +1713,68 @@ Create 2-4 tasks that would best advance this research objective."""
             finding_text = recent_findings[0]["text"]
             new_objective = f"Explore implications of finding: {finding_text}"
         else:
-            # Broaden the search
-            new_objective = f"Continue investigation from: {parent_cycle.objective}"
+            # Broaden the search - but prevent recursive nesting of "Continue investigation from:"
+            # Strip any existing "Continue investigation from:" prefixes to get the base objective
+            base_objective = parent_cycle.objective
+            while base_objective.startswith("Continue investigation from: "):
+                base_objective = base_objective[len("Continue investigation from: "):]
+            # Also strip "Synthesize findings and explore new aspects of:" prefix
+            while base_objective.startswith("Synthesize findings and explore new aspects of: "):
+                base_objective = base_objective[len("Synthesize findings and explore new aspects of: "):]
 
-        # Create new cycle
+            # Count how many times we've continued without progress
+            nesting_count = parent_cycle.objective.count("Continue investigation from:")
+
+            if nesting_count >= 2:
+                # After 2 continuations without findings/hypotheses, force a pivot cycle
+                new_objective = f"Synthesize findings and explore new aspects of: {base_objective}"
+                cycle_type = CycleType.PIVOT
+            else:
+                new_objective = f"Continue investigation from: {base_objective}"
+
+        # Create new cycle with type and parent linkage
         new_cycle = self.create_cycle(
             objective=new_objective,
             max_tasks=10,
         )
 
-        # Link to parent via metadata
-        # Store parent cycle ID in the cycle object
-        # (We could extend Cycle dataclass to have parent_cycle_id field)
-        # For now, we'll just track it in our records
+        # Set cycle type and parent linkage
+        new_cycle.cycle_type = cycle_type
+        new_cycle.parent_cycle_id = parent_cycle.cycle_id
         new_cycle.status = TaskStatus.PENDING
+
+        return new_cycle
+
+    def _create_synthesis_cycle(self, parent_cycle: Cycle) -> Cycle:
+        """
+        Create a synthesis cycle for meta-analysis and knowledge consolidation.
+
+        Args:
+            parent_cycle: The parent cycle that triggered this synthesis
+
+        Returns:
+            New Cycle object configured for synthesis
+        """
+        # Generate synthesis objective
+        synthesis_objective = self._create_synthesis_objective()
+
+        # TODO: Future enhancement - analyze original objective and identify gaps
+        # TODO: Future enhancement - identify contradictory findings to reconcile
+        # TODO: Future enhancement - suggest pivots to under-explored areas
+
+        # Create the synthesis cycle
+        new_cycle = self.create_cycle(
+            objective=synthesis_objective,
+            max_tasks=5,  # Synthesis cycles are typically smaller
+        )
+
+        # Set cycle type and parent linkage
+        new_cycle.cycle_type = CycleType.SYNTHESIS
+        new_cycle.parent_cycle_id = parent_cycle.cycle_id
+        new_cycle.status = TaskStatus.PENDING
+
+        print(f"   📊 Created synthesis cycle: {new_cycle.cycle_id}")
+        print(f"   📋 Objective: {synthesis_objective[:100]}...")
 
         return new_cycle
 
@@ -2241,7 +2604,7 @@ Respond with JSON in this exact format:
 
         return score
 
-    def _create_analysis_task(self, gap: Dict[str, Any], cycle_id: str) -> Task:
+    def _create_analysis_task(self, gap: Dict[str, Any], cycle_id: str) -> Optional[Task]:
         """
         Create a data analysis task for an unexplored gap.
 
@@ -2250,23 +2613,33 @@ Respond with JSON in this exact format:
             cycle_id: Cycle ID to attach task to
 
         Returns:
-            New Task object
+            New Task object, or None if no dataset is available
         """
-        if "dataset_id" in gap:
+        if "dataset_id" in gap and "dataset_path" in gap:
+            # Only create ANALYZE_DATA tasks when we have an actual dataset
             objective = f"Analyze unexplored dataset: {gap['text']}"
             context = {
                 "dataset_id": gap["dataset_id"],
+                "dataset_path": gap["dataset_path"],
                 "requires_dataset": True,
             }
         elif "finding_id" in gap:
+            # Follow-up on findings doesn't require a dataset - use SYNTHESIZE_FINDINGS instead
             objective = f"Follow up on novel finding: {gap['text'][:100]}"
-            context = {
-                "finding_id": gap["finding_id"],
-                "focus": "implications",
-            }
+            return Task(
+                task_id=str(uuid4()),
+                task_type=TaskType.SYNTHESIZE_FINDINGS,
+                status=TaskStatus.PENDING,
+                objective=objective,
+                context={
+                    "finding_id": gap["finding_id"],
+                    "focus": "implications",
+                },
+            )
         else:
-            objective = f"Analyze data for: {gap['text'][:100]}"
-            context = {"requires_dataset": True}
+            # No dataset available - skip creating this task
+            # ANALYZE_DATA tasks require a dataset_path to be useful
+            return None
 
         return Task(
             task_id=str(uuid4()),
@@ -2362,9 +2735,10 @@ Respond with JSON in this exact format:
 
         # Data analysis tasks for unexplored datasets
         for gap in gaps["unexplored_data"]:
-            score = self._score_task_priority(gap, type="data_analysis")
             task = self._create_analysis_task(gap, cycle_id)
-            task_candidates.append((score, task))
+            if task is not None:  # Skip if no dataset available
+                score = self._score_task_priority(gap, type="data_analysis")
+                task_candidates.append((score, task))
 
         # Literature search for under-supported claims
         for gap in gaps["weak_evidence"]:

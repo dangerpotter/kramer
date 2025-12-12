@@ -72,6 +72,184 @@ async def list_reports(discovery_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# Cycle Report Endpoints - must be defined BEFORE /{discovery_id}/{report_id} to avoid route conflicts
+
+class CycleReportResponse(BaseModel):
+    """Cycle report response model."""
+    id: str
+    cycle_id: str
+    discovery_id: str
+    summary: str
+    tasks_completed: int
+    findings_count: int
+    hypotheses_count: int
+    papers_count: int
+    budget_used: float
+    generation_cost: float
+    created_at: str
+
+
+@router.get("/{discovery_id}/cycle-reports")
+async def list_cycle_reports(discovery_id: str):
+    """
+    List all cycle reports for a discovery.
+
+    Args:
+        discovery_id: Discovery ID
+
+    Returns:
+        List of cycle report summaries (from database + filesystem final reports)
+    """
+    try:
+        from app.services.persistence_service import get_persistence_service
+
+        persistence = get_persistence_service()
+        reports = await persistence.get_cycle_reports(discovery_id)
+
+        cycle_reports = []
+        for report in reports:
+            cycle_reports.append({
+                "id": report.id,
+                "cycle_id": report.cycle_id,
+                "discovery_id": report.discovery_id,
+                "summary": report.summary,
+                "tasks_completed": report.tasks_completed,
+                "findings_count": report.findings_count,
+                "hypotheses_count": report.hypotheses_count,
+                "papers_count": report.papers_count,
+                "budget_used": report.budget_used,
+                "generation_cost": report.generation_cost,
+                "created_at": report.created_at.isoformat() if report.created_at else None,
+            })
+
+        # Check if final report exists in database (new format)
+        has_final_in_db = any(r.get("cycle_id") == "final_report" for r in cycle_reports)
+
+        # If not in database, check filesystem for backward compatibility
+        if not has_final_in_db:
+            reports_dir = Path(f"../outputs/{discovery_id}")
+            if reports_dir.exists():
+                final_report_path = reports_dir / "final_report.md"
+                if final_report_path.exists():
+                    stat = final_report_path.stat()
+                    # Read first ~200 chars for summary
+                    with open(final_report_path, "r", encoding="utf-8") as f:
+                        content = f.read(500)
+                        # Extract first paragraph or heading as summary
+                        lines = content.split('\n')
+                        summary = ""
+                        for line in lines:
+                            if line.strip() and not line.startswith('#'):
+                                summary = line.strip()[:200]
+                                break
+                        if not summary:
+                            summary = "Final discovery report with complete findings and conclusions"
+
+                    cycle_reports.append({
+                        "id": "final_report",
+                        "cycle_id": "final_report",
+                        "discovery_id": discovery_id,
+                        "summary": summary,
+                        "tasks_completed": 0,
+                        "findings_count": 0,
+                        "hypotheses_count": 0,
+                        "papers_count": 0,
+                        "budget_used": 0.0,
+                        "generation_cost": 0.0,
+                        "created_at": datetime.fromtimestamp(stat.st_ctime).isoformat(),
+                        "is_final_report": True,
+                    })
+
+        # Mark final reports with the flag
+        for report in cycle_reports:
+            if report.get("cycle_id") == "final_report":
+                report["is_final_report"] = True
+
+        return {"cycle_reports": cycle_reports, "count": len(cycle_reports)}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{discovery_id}/cycle-reports/{cycle_id}")
+async def get_cycle_report(discovery_id: str, cycle_id: str):
+    """
+    Get a specific cycle report's full content.
+
+    Args:
+        discovery_id: Discovery ID
+        cycle_id: Cycle ID (or "final_report" for the final report)
+
+    Returns:
+        Full cycle report content
+    """
+    try:
+        # All reports (including final) are stored in the database
+        # For final_report, check database first, fall back to filesystem for backward compatibility
+        from app.services.persistence_service import get_persistence_service
+
+        persistence = get_persistence_service()
+        report = await persistence.get_cycle_report(cycle_id)
+
+        if report:
+            if report.discovery_id != discovery_id:
+                raise HTTPException(status_code=404, detail="Cycle report not found for this discovery")
+
+            response = {
+                "id": report.id,
+                "cycle_id": report.cycle_id,
+                "discovery_id": report.discovery_id,
+                "summary": report.summary,
+                "full_content": report.full_content,
+                "tasks_completed": report.tasks_completed,
+                "findings_count": report.findings_count,
+                "hypotheses_count": report.hypotheses_count,
+                "papers_count": report.papers_count,
+                "budget_used": report.budget_used,
+                "generation_cost": report.generation_cost,
+                "created_at": report.created_at.isoformat() if report.created_at else None,
+                "format": "markdown",
+            }
+            # Add flag for final reports
+            if report.cycle_id == "final_report":
+                response["is_final_report"] = True
+            return response
+
+        # Not found in database - check filesystem for backward compatibility (final_report only)
+        if cycle_id == "final_report":
+            final_report_path = Path(f"../outputs/{discovery_id}/final_report.md")
+            if final_report_path.exists():
+                with open(final_report_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+
+                stat = final_report_path.stat()
+                return {
+                    "id": "final_report",
+                    "cycle_id": "final_report",
+                    "discovery_id": discovery_id,
+                    "summary": "Final discovery report",
+                    "full_content": content,
+                    "tasks_completed": 0,
+                    "findings_count": 0,
+                    "hypotheses_count": 0,
+                    "papers_count": 0,
+                    "budget_used": 0.0,
+                    "generation_cost": 0.0,
+                    "created_at": datetime.fromtimestamp(stat.st_ctime).isoformat(),
+                    "format": "markdown",
+                    "is_final_report": True,
+                }
+
+        raise HTTPException(status_code=404, detail="Cycle report not found")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Generic report endpoints (filesystem-based) - must come AFTER specific routes
+
 @router.get("/{discovery_id}/{report_id}")
 async def get_report(discovery_id: str, report_id: str):
     """
@@ -204,108 +382,6 @@ async def delete_report(discovery_id: str, report_id: str):
         report_path.unlink()
 
         return {"message": f"Report {report_id} deleted successfully"}
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# Cycle Report Endpoints
-
-class CycleReportResponse(BaseModel):
-    """Cycle report response model."""
-    id: str
-    cycle_id: str
-    discovery_id: str
-    summary: str
-    tasks_completed: int
-    findings_count: int
-    hypotheses_count: int
-    papers_count: int
-    budget_used: float
-    generation_cost: float
-    created_at: str
-
-
-@router.get("/{discovery_id}/cycle-reports")
-async def list_cycle_reports(discovery_id: str):
-    """
-    List all cycle reports for a discovery.
-
-    Args:
-        discovery_id: Discovery ID
-
-    Returns:
-        List of cycle report summaries
-    """
-    try:
-        from app.services.persistence_service import get_persistence_service
-
-        persistence = get_persistence_service()
-        reports = await persistence.get_cycle_reports(discovery_id)
-
-        cycle_reports = []
-        for report in reports:
-            cycle_reports.append({
-                "id": report.id,
-                "cycle_id": report.cycle_id,
-                "discovery_id": report.discovery_id,
-                "summary": report.summary,
-                "tasks_completed": report.tasks_completed,
-                "findings_count": report.findings_count,
-                "hypotheses_count": report.hypotheses_count,
-                "papers_count": report.papers_count,
-                "budget_used": report.budget_used,
-                "generation_cost": report.generation_cost,
-                "created_at": report.created_at.isoformat() if report.created_at else None,
-            })
-
-        return {"cycle_reports": cycle_reports, "count": len(cycle_reports)}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/{discovery_id}/cycle-reports/{cycle_id}")
-async def get_cycle_report(discovery_id: str, cycle_id: str):
-    """
-    Get a specific cycle report's full content.
-
-    Args:
-        discovery_id: Discovery ID
-        cycle_id: Cycle ID
-
-    Returns:
-        Full cycle report content
-    """
-    try:
-        from app.services.persistence_service import get_persistence_service
-
-        persistence = get_persistence_service()
-        report = await persistence.get_cycle_report(cycle_id)
-
-        if not report:
-            raise HTTPException(status_code=404, detail="Cycle report not found")
-
-        if report.discovery_id != discovery_id:
-            raise HTTPException(status_code=404, detail="Cycle report not found for this discovery")
-
-        return {
-            "id": report.id,
-            "cycle_id": report.cycle_id,
-            "discovery_id": report.discovery_id,
-            "summary": report.summary,
-            "full_content": report.full_content,
-            "tasks_completed": report.tasks_completed,
-            "findings_count": report.findings_count,
-            "hypotheses_count": report.hypotheses_count,
-            "papers_count": report.papers_count,
-            "budget_used": report.budget_used,
-            "generation_cost": report.generation_cost,
-            "created_at": report.created_at.isoformat() if report.created_at else None,
-            "format": "markdown",
-        }
 
     except HTTPException:
         raise

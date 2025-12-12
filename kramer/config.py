@@ -41,6 +41,9 @@ def setup_logging(config: Config):
     logger = logging.getLogger()
     logger.setLevel(getattr(logging, config.log_level.upper()))
 
+    # Clear existing handlers to prevent duplicates on reload
+    logger.handlers.clear()
+
     # Create formatters
     formatter = logging.Formatter(
         '%(asctime)s - %(name)s - %(levelname)s - %(message)s',

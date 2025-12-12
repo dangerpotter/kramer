@@ -8,9 +8,10 @@ returns structured results.
 
 import asyncio
 import os
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from src.kramer.data_analysis_agent import AgentConfig, DataAnalysisAgent
 from src.kramer.hypothesis_agent import HypothesisAgent
@@ -20,6 +21,83 @@ from src.world_model.graph import EdgeType, NodeType, WorldModel
 
 # Import LiteratureAgent
 from src.kramer.literature_agent import LiteratureAgent
+
+
+def _tokenize(text: str) -> Set[str]:
+    """
+    Simple tokenization: lowercase and split on non-alphanumeric characters.
+    Removes common stopwords for better similarity comparison.
+    """
+    stopwords = {
+        "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+        "have", "has", "had", "do", "does", "did", "will", "would", "could",
+        "should", "may", "might", "must", "shall", "can", "to", "of", "in",
+        "for", "on", "with", "at", "by", "from", "as", "into", "through",
+        "during", "before", "after", "above", "below", "between", "under",
+        "and", "but", "or", "nor", "so", "yet", "both", "either", "neither",
+        "not", "only", "same", "than", "too", "very", "just", "that", "this",
+        "these", "those", "it", "its", "they", "their", "them", "we", "our",
+    }
+    words = set(re.findall(r'\b[a-z]{3,}\b', text.lower()))
+    return words - stopwords
+
+
+def _compute_text_similarity(text1: str, text2: str) -> float:
+    """
+    Compute Jaccard similarity between two texts.
+    Returns value between 0 (completely different) and 1 (identical).
+    """
+    tokens1 = _tokenize(text1)
+    tokens2 = _tokenize(text2)
+
+    if not tokens1 or not tokens2:
+        return 0.0
+
+    intersection = len(tokens1 & tokens2)
+    union = len(tokens1 | tokens2)
+
+    return intersection / union if union > 0 else 0.0
+
+
+def calculate_finding_novelty(finding_text: str, world_model: WorldModel) -> float:
+    """
+    Calculate novelty score for a finding based on similarity to existing findings.
+
+    Novelty is the inverse of the maximum similarity to any existing finding.
+    A completely unique finding has novelty 1.0, while a duplicate has novelty 0.0.
+
+    Args:
+        finding_text: The text of the new finding
+        world_model: WorldModel containing existing findings
+
+    Returns:
+        Novelty score between 0.0 and 1.0
+    """
+    existing_findings = []
+    for node_id, data in world_model.query_nodes(NodeType.FINDING):
+        existing_text = data.get("text", "")
+        if existing_text:
+            existing_findings.append(existing_text)
+
+    if not existing_findings:
+        # First finding is maximally novel
+        return 1.0
+
+    # Calculate similarity to each existing finding
+    max_similarity = 0.0
+    for existing_text in existing_findings:
+        similarity = _compute_text_similarity(finding_text, existing_text)
+        max_similarity = max(max_similarity, similarity)
+
+    # Novelty is inverse of similarity
+    # Apply a threshold: if similarity > 0.8, consider it near-duplicate
+    novelty = 1.0 - max_similarity
+
+    # TODO: Future enhancement - use embedding-based similarity for better semantic matching
+    # TODO: Future enhancement - consider topic/domain novelty, not just text similarity
+    # TODO: Future enhancement - weight by finding confidence and recency
+
+    return round(novelty, 3)
 
 
 @dataclass
@@ -234,7 +312,27 @@ class AgentCoordinator:
                 )
 
             # Store papers in world model for later retrieval
+            # First, collect existing paper IDs to avoid duplicates
+            existing_paper_ids = set()
+            for node_id, data in world_model.query_nodes(NodeType.PAPER):
+                meta = data.get("metadata", {})
+                if meta.get("semantic_scholar_id"):
+                    existing_paper_ids.add(meta["semantic_scholar_id"])
+                if meta.get("arxiv_id"):
+                    existing_paper_ids.add(meta["arxiv_id"])
+                # Also check DOI for deduplication
+                if meta.get("doi"):
+                    existing_paper_ids.add(meta["doi"])
+
+            papers_added = 0
+            papers_skipped = 0
             for paper in result.get("papers", []):
+                # Check if paper already exists in world model
+                paper_id = paper.get("paperId") or paper.get("arxiv_id") or paper.get("doi")
+                if paper_id and paper_id in existing_paper_ids:
+                    papers_skipped += 1
+                    continue  # Skip duplicate paper
+
                 try:
                     world_model.add_paper(
                         text=paper.get("abstract", paper.get("title", "No abstract available")),
@@ -251,8 +349,15 @@ class AgentCoordinator:
                             "semantic_scholar_id": paper.get("paperId"),
                         }
                     )
+                    papers_added += 1
+                    # Track the paper ID to avoid adding it again in this batch
+                    if paper_id:
+                        existing_paper_ids.add(paper_id)
                 except Exception as e:
                     print(f"Warning: Could not add paper to world model: {e}")
+
+            if papers_skipped > 0:
+                print(f"   📚 Papers: {papers_added} added, {papers_skipped} skipped (duplicates)")
 
             # Extract cost from result (if available)
             actual_cost = result.get("cost", 0.0)
@@ -265,6 +370,8 @@ class AgentCoordinator:
                 cost=actual_cost,
                 metadata={
                     "papers_found": len(result.get("papers", [])),
+                    "papers_added": papers_added,
+                    "papers_skipped_duplicates": papers_skipped,
                     "query": task.objective,
                 },
             )
@@ -539,6 +646,9 @@ class AgentCoordinator:
                     # Create finding node for evidence
                     finding_text = evidence.get("finding", evidence.get("reasoning", "Test evidence"))
 
+                    # Calculate novelty score for this finding
+                    novelty = calculate_finding_novelty(finding_text, world_model)
+
                     finding_id = world_model.add_finding(
                         text=finding_text,
                         confidence=evidence.get("confidence", 0.5),
@@ -546,6 +656,7 @@ class AgentCoordinator:
                             "source": evidence.get("source"),
                             "evidence_type": evidence.get("type"),
                             "from_hypothesis_test": hypothesis_id,
+                            "novelty": novelty,
                         },
                     )
 
