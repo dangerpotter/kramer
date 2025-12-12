@@ -286,9 +286,36 @@ class KramerBridge:
 
     def _attach_event_hooks(self, discovery_id: str, orchestrator: Orchestrator) -> None:
         """Attach event hooks to Orchestrator for real-time updates."""
-        # Note: This would require modifying Orchestrator to support callbacks
-        # For now, we'll emit events at key points
-        pass
+
+        def event_handler(event_type: str, message: str, data: Dict) -> None:
+            """Handle events from Orchestrator and emit to WebSocket."""
+            # Map orchestrator event types to EventType enum
+            event_type_map = {
+                "cycle_started": EventType.CYCLE_STARTED,
+                "cycle_completed": EventType.CYCLE_COMPLETED,
+                "task_started": EventType.TASK_STARTED,
+                "task_completed": EventType.TASK_COMPLETED,
+                "task_failed": EventType.TASK_FAILED,
+                "progress_update": EventType.PROGRESS_UPDATE,
+                "budget_warning": EventType.BUDGET_WARNING,
+            }
+
+            mapped_type = event_type_map.get(event_type, EventType.LOG_MESSAGE)
+            event = create_event(
+                event_type=mapped_type,
+                discovery_id=discovery_id,
+                data={"message": message, **data}
+            )
+
+            # Schedule async emission from sync callback
+            try:
+                loop = asyncio.get_running_loop()
+                asyncio.create_task(self._emit_event(discovery_id, event))
+            except RuntimeError:
+                # No running loop - this shouldn't happen during discovery
+                logger.warning(f"No event loop available for event: {event_type}")
+
+        orchestrator.set_event_callback(event_handler)
 
     async def _emit_event(self, discovery_id: str, event: Event) -> None:
         """Emit an event if callback is registered."""

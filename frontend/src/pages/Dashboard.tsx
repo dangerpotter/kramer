@@ -36,6 +36,78 @@ function transformCycleData(metrics: any) {
   }))
 }
 
+// Event configuration for activity feed display
+function getEventConfig(type: string): { icon: string; label: string; bgColor: string; textColor: string } {
+  const configs: Record<string, { icon: string; label: string; bgColor: string; textColor: string }> = {
+    'cycle_started': {
+      icon: '🔄',
+      label: 'Cycle Started',
+      bgColor: 'bg-blue-50 dark:bg-blue-900/30 border-blue-200 dark:border-blue-800',
+      textColor: 'text-blue-700 dark:text-blue-300'
+    },
+    'cycle_completed': {
+      icon: '✓',
+      label: 'Cycle Complete',
+      bgColor: 'bg-green-50 dark:bg-green-900/30 border-green-200 dark:border-green-800',
+      textColor: 'text-green-700 dark:text-green-300'
+    },
+    'task_started': {
+      icon: '▶',
+      label: 'Task Started',
+      bgColor: 'bg-yellow-50 dark:bg-yellow-900/30 border-yellow-200 dark:border-yellow-800',
+      textColor: 'text-yellow-700 dark:text-yellow-300'
+    },
+    'task_completed': {
+      icon: '✓',
+      label: 'Task Complete',
+      bgColor: 'bg-green-50 dark:bg-green-900/30 border-green-200 dark:border-green-800',
+      textColor: 'text-green-700 dark:text-green-300'
+    },
+    'task_failed': {
+      icon: '✗',
+      label: 'Task Failed',
+      bgColor: 'bg-red-50 dark:bg-red-900/30 border-red-200 dark:border-red-800',
+      textColor: 'text-red-700 dark:text-red-300'
+    },
+    'progress_update': {
+      icon: 'ℹ',
+      label: 'Progress',
+      bgColor: 'bg-gray-50 dark:bg-gray-700 border-gray-200 dark:border-gray-600',
+      textColor: 'text-gray-700 dark:text-gray-300'
+    },
+    'budget_warning': {
+      icon: '⚠',
+      label: 'Budget Warning',
+      bgColor: 'bg-orange-50 dark:bg-orange-900/30 border-orange-200 dark:border-orange-800',
+      textColor: 'text-orange-700 dark:text-orange-300'
+    },
+    'discovery_started': {
+      icon: '🚀',
+      label: 'Discovery Started',
+      bgColor: 'bg-purple-50 dark:bg-purple-900/30 border-purple-200 dark:border-purple-800',
+      textColor: 'text-purple-700 dark:text-purple-300'
+    },
+    'discovery_completed': {
+      icon: '🎉',
+      label: 'Discovery Complete',
+      bgColor: 'bg-green-50 dark:bg-green-900/30 border-green-200 dark:border-green-800',
+      textColor: 'text-green-700 dark:text-green-300'
+    },
+    'discovery_failed': {
+      icon: '❌',
+      label: 'Discovery Failed',
+      bgColor: 'bg-red-50 dark:bg-red-900/30 border-red-200 dark:border-red-800',
+      textColor: 'text-red-700 dark:text-red-300'
+    },
+  }
+  return configs[type] || {
+    icon: '•',
+    label: type.replace(/_/g, ' '),
+    bgColor: 'bg-gray-50 dark:bg-gray-700 border-gray-200 dark:border-gray-600',
+    textColor: 'text-gray-700 dark:text-gray-300'
+  }
+}
+
 export default function Dashboard() {
   const { discoveryId } = useParams<{ discoveryId: string }>()
   const { data: status, isLoading } = useDiscovery(discoveryId!)
@@ -137,26 +209,32 @@ export default function Dashboard() {
               Waiting for events...
             </p>
           ) : (
-            messages.slice().reverse().map((msg, idx) => (
-              <div
-                key={idx}
-                className="p-3 bg-gray-50 dark:bg-gray-700 rounded-lg border border-gray-200 dark:border-gray-600"
-              >
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="font-medium text-sm text-gray-900 dark:text-white">
-                      {msg.type}
+            messages.slice().reverse().map((msg, idx) => {
+              const config = getEventConfig(msg.type)
+              return (
+                <div
+                  key={idx}
+                  className={`p-3 rounded-lg border ${config.bgColor}`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-2 flex-1 min-w-0">
+                      <span className="text-lg flex-shrink-0">{config.icon}</span>
+                      <div className="min-w-0 flex-1">
+                        <div className={`font-medium text-sm ${config.textColor}`}>
+                          {config.label}
+                        </div>
+                        <div className="text-sm text-gray-600 dark:text-gray-300 mt-0.5 truncate">
+                          {msg.data?.message || msg.type}
+                        </div>
+                      </div>
                     </div>
-                    <div className="text-sm text-gray-600 dark:text-gray-300 mt-1">
-                      {JSON.stringify(msg.data, null, 2)}
+                    <div className="text-xs text-gray-500 dark:text-gray-400 flex-shrink-0">
+                      {new Date(msg.timestamp).toLocaleTimeString()}
                     </div>
-                  </div>
-                  <div className="text-xs text-gray-500 dark:text-gray-400">
-                    {new Date(msg.timestamp).toLocaleTimeString()}
                   </div>
                 </div>
-              </div>
-            ))
+              )
+            })
           )}
         </div>
       </Card>

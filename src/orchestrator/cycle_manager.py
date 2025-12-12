@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 from uuid import uuid4
 
 import anthropic
@@ -266,6 +266,34 @@ class Orchestrator:
         # Cycle report tracking
         self.cycle_reports: List[CycleReportContent] = []
 
+        # Event callback for real-time progress updates
+        self.event_callback: Optional[Callable[[str, str, Dict[str, Any]], None]] = None
+
+    def set_event_callback(
+        self,
+        callback: Callable[[str, str, Dict[str, Any]], None]
+    ) -> None:
+        """
+        Set callback for progress events.
+
+        Args:
+            callback: Function(event_type: str, message: str, data: dict)
+        """
+        self.event_callback = callback
+
+    def _emit_event(
+        self,
+        event_type: str,
+        message: str,
+        data: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Emit an event to registered callback if present."""
+        if self.event_callback:
+            try:
+                self.event_callback(event_type, message, data or {})
+            except Exception:
+                pass  # Don't let event emission block orchestrator
+
     def set_discovery_context(
         self,
         discovery_id: str,
@@ -380,6 +408,13 @@ class Orchestrator:
         # Mark cycle as started
         cycle.status = TaskStatus.RUNNING
         cycle.started_at = datetime.utcnow()
+
+        # Emit cycle started event
+        self._emit_event(
+            "cycle_started",
+            f"Starting cycle: {objective[:50]}{'...' if len(objective) > 50 else ''}",
+            {"cycle_id": cycle.cycle_id, "objective": objective}
+        )
 
         # Create initial tasks based on objective
         # For now, we'll create a simple set of initial tasks
@@ -977,6 +1012,11 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
         # Check for synthesis trigger after initial cycle
         if self.auto_synthesize and self._should_trigger_synthesis(cycles_run - 1):
             print(f"Triggering synthesis at cycle {cycles_run}")
+            self._emit_event(
+                "progress_update",
+                f"Triggering synthesis at cycle {cycles_run}",
+                {"cycle_number": cycles_run}
+            )
             await self._execute_synthesis_task(cycles_run - 1)
 
         # Discovery loop: spawn follow-up cycles as needed
@@ -997,10 +1037,20 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
             MIN_VIABLE_BUDGET = 0.10  # $0.10 minimum to attempt another cycle
             if budget_remaining < MIN_VIABLE_BUDGET:
                 print(f"Insufficient budget remaining (${budget_remaining:.2f}). Stopping discovery loop.")
+                self._emit_event(
+                    "budget_warning",
+                    f"Insufficient budget (${budget_remaining:.2f} remaining)",
+                    {"remaining": budget_remaining, "threshold": MIN_VIABLE_BUDGET}
+                )
                 break
 
             # Spawn follow-up cycle
             print(f"Spawning follow-up cycle {cycles_run + 1}/{max_cycles}...")
+            self._emit_event(
+                "progress_update",
+                f"Spawning follow-up cycle {cycles_run + 1}/{max_cycles}",
+                {"cycle_number": cycles_run + 1, "max_cycles": max_cycles}
+            )
             follow_up_cycle = self._spawn_follow_up_cycle(current_cycle)
 
             # Plan tasks for the follow-up cycle
@@ -1028,6 +1078,11 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
             # Check for synthesis trigger after this cycle
             if self.auto_synthesize and self._should_trigger_synthesis(cycles_run - 1):
                 print(f"Triggering synthesis at cycle {cycles_run}")
+                self._emit_event(
+                    "progress_update",
+                    f"Triggering synthesis at cycle {cycles_run}",
+                    {"cycle_number": cycles_run}
+                )
                 await self._execute_synthesis_task(cycles_run - 1)
 
                 # Check if this was final synthesis (objective complete)
@@ -1079,6 +1134,11 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
         """
         try:
             print("\n📝 Generating final report...")
+            self._emit_event(
+                "progress_update",
+                "Generating final report...",
+                {}
+            )
 
             generator = ReportGenerator(
                 world_model=self.world_model,
@@ -1101,6 +1161,11 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
             print(f"✅ Final report generated: {output_path}")
             print(f"   Report cost: ${report_cost:.2f}")
             print(f"   Total cost (including report): ${self.total_budget_used:.2f}")
+            self._emit_event(
+                "progress_update",
+                f"Final report generated (${report_cost:.2f})",
+                {"report_path": str(output_path), "cost": report_cost, "total_cost": self.total_budget_used}
+            )
 
             # Save final report to database for UI access
             if self.persistence_service and self.discovery_id:
@@ -1167,6 +1232,11 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
                 break
 
             print(f"Executing wave {wave_count + 1} with {len(pending_tasks)} tasks")
+            self._emit_event(
+                "progress_update",
+                f"Executing wave {wave_count + 1} with {len(pending_tasks)} tasks",
+                {"wave": wave_count + 1, "task_count": len(pending_tasks)}
+            )
 
             # Execute tasks in parallel
             await self._execute_tasks_parallel(pending_tasks, cycle)
@@ -1184,6 +1254,13 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
             cycle.status = TaskStatus.COMPLETED
 
         cycle.completed_at = datetime.utcnow()
+
+        # Emit cycle completed event
+        self._emit_event(
+            "cycle_completed",
+            f"Cycle complete (${cycle.budget_used:.2f} spent)",
+            {"cycle_id": cycle.cycle_id, "budget_used": cycle.budget_used, "status": cycle.status.value}
+        )
 
     async def _generate_cycle_report(
         self,
@@ -1257,6 +1334,11 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
             self.cycle_reports.append(report)
 
             print(f"📊 Generated cycle {cycle_number} report (cost: ${report.generation_cost:.2f})")
+            self._emit_event(
+                "progress_update",
+                f"Generated cycle {cycle_number} report",
+                {"cycle_number": cycle_number, "cost": report.generation_cost}
+            )
             return report
 
         except Exception as e:
@@ -1355,6 +1437,11 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
         raw_info = task.context.get("hypothesis_id", objective_str[:50] if objective_str else "")
         task_info = str(raw_info)[:50] if raw_info else ""
         print(f"  [TASK] Starting {task.task_type.value}: {task_info}...")
+        self._emit_event(
+            "task_started",
+            f"Starting {task.task_type.value}: {task_info}",
+            {"task_id": task.task_id, "task_type": task.task_type.value, "objective": task_info}
+        )
 
         # Add to active tasks
         self.active_tasks[task.task_id] = task
@@ -1470,11 +1557,21 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
                 task.status = TaskStatus.COMPLETED
                 task.result = result.to_dict()
                 print(f"  [TASK] Completed {task.task_type.value}: ${result.cost:.4f}")
+                self._emit_event(
+                    "task_completed",
+                    f"Completed {task.task_type.value} (${result.cost:.4f})",
+                    {"task_id": task.task_id, "task_type": task.task_type.value, "cost": result.cost}
+                )
             else:
                 task.status = TaskStatus.FAILED
                 task.error = result.error
                 task.result = result.to_dict()
                 print(f"  [TASK] Failed {task.task_type.value}: {result.error}")
+                self._emit_event(
+                    "task_failed",
+                    f"Failed {task.task_type.value}: {result.error}",
+                    {"task_id": task.task_id, "task_type": task.task_type.value, "error": result.error}
+                )
 
             # Update budget
             cycle.budget_used += result.cost
@@ -1493,6 +1590,11 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
                 "error": str(e),
             }
             print(f"  [TASK] Error in {task.task_type.value}: {str(e)}")
+            self._emit_event(
+                "task_failed",
+                f"Error in {task.task_type.value}: {str(e)}",
+                {"task_id": task.task_id, "task_type": task.task_type.value, "error": str(e)}
+            )
 
         finally:
             # Mark completion time and remove from active tasks
