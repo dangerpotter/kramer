@@ -1,28 +1,107 @@
 # Kramer
 
-A pragmatic implementation of autonomous discovery cycles for scientific research with AI-powered data analysis.
+A comprehensive AI-powered research discovery platform that autonomously runs discovery cycles, generates and tests hypotheses, integrates scientific literature, and maintains a knowledge graph with full provenance tracking.
 
 ## Overview
 
-Kramer is an autonomous research system that uses Claude AI to run discovery cycles. It combines:
+Kramer is an autonomous research system that uses Claude AI to conduct iterative discovery cycles. It combines:
 - **Data Analysis**: Autonomous generation, execution, and analysis of Python code for data science tasks
-- **Literature Review**: Semantic Scholar integration for research paper discovery
-- **Hypothesis Generation**: Automated hypothesis generation from findings
-- **Knowledge Management**: Graph-based world model with full provenance tracking
-- **Report Generation**: Markdown reports with citations
+- **Literature Integration**: Semantic Scholar and arXiv integration for research paper discovery
+- **Hypothesis Generation & Testing**: Automated hypothesis generation, novelty detection, and validation
+- **Knowledge Graph**: Graph-based world model with full provenance tracking and relationship mapping
+- **Real-time Web Interface**: Interactive dashboard, graph visualization, and reporting
+- **Report Generation**: Multiple report types (summary, detailed, executive) with citations
 
-## 🌟 Features
+## Features
 
+### Discovery System
+- **Autonomous Discovery Cycles**: Multi-cycle discovery framework with exploration, synthesis, and pivot cycles
+- **Budget Management**: Total budget tracking and per-cycle budget allocation
+- **Multiple Sessions**: Create and manage multiple independent discovery sessions
+- **Real-time Monitoring**: WebSocket-powered live updates on discovery progress
+- **Checkpointing**: Automatic checkpoint system to save progress at configurable intervals
+- **Parallel Execution**: Run multiple tasks concurrently within each cycle
+
+### AI & Analysis
 - **Extended Thinking**: Uses Claude's extended thinking capability for deeper analytical reasoning
-- **Safe Code Execution**: Sandboxed code execution with timeout and error handling
-- **Structured Findings**: Automatically extracts statistics, insights, and visualizations
-- **Jupyter Notebooks**: Creates publication-ready notebooks with all analysis steps
-- **World Model**: NetworkX graph + SQLite for persistent knowledge storage
-- **Literature Integration**: Semantic Scholar API integration for research papers
-- **Full Provenance**: All findings linked to source code and execution metadata
-- **Robust Error Handling**: Graceful error handling with detailed logging
+- **Safe Code Execution**: Sandboxed subprocess execution with timeout and error handling
+- **Multi-Model Support**: Choose from available Claude models (Opus, Sonnet)
+- **Cost Tracking**: Comprehensive cost tracking per cycle and cumulative budget consumption
 
-## 🚀 Quick Start
+### Knowledge Management
+- **World Model Graph**: NetworkX graph + SQLite for persistent knowledge storage
+- **Node Types**: Findings, hypotheses, questions, datasets, and papers
+- **Edge Types**: Supports, refutes, derives_from, relates_to relationships
+- **Confidence Scoring**: Confidence levels on all nodes for reliability assessment
+- **Full Provenance**: All findings linked to source code, papers, and execution metadata
+
+### Literature Integration
+- **Multi-Source Search**: Semantic Scholar and arXiv API integration
+- **RAG Engine**: ChromaDB-based vector embeddings for paper chunks
+- **Claim Extraction**: AI-powered extraction of claims from papers
+- **Citation Management**: Automatic bibliography generation with citations
+
+### Hypothesis System
+- **Automatic Generation**: AI-powered hypothesis generation from findings
+- **Novelty Detection**: Embedding-based novelty detection for new hypotheses
+- **Automated Testing**: Hypothesis validation through data analysis
+- **Status Tracking**: Track hypothesis states (untested, testing, supported, refuted)
+
+## Web Interface
+
+Kramer includes a full React-based web interface with the following pages:
+
+### Configure Page (`/configure`)
+Create new discovery sessions with:
+- Objective specification
+- Model selection (dynamically loaded from Anthropic API)
+- Dataset path configuration
+- Cycle count and budget parameters
+- Parallel task settings
+- Checkpoint intervals
+
+### Discovery History (`/history`)
+- View all past and current discoveries
+- Search by objective
+- Filter by status (running, completed, failed, stopped)
+- Quick access to any discovery session
+
+### Dashboard (`/dashboard/:discoveryId`)
+Real-time discovery monitoring:
+- Cost and budget visualization
+- Cycle timeline with performance metrics
+- Task breakdown and distribution
+- WebSocket connection status
+- Stop discovery controls
+
+### Explorer (`/explorer/:discoveryId`)
+Browse discovery results:
+- All findings with confidence scores
+- Hypotheses with test status
+- Papers discovered
+- Filter by confidence level
+- Source badges (literature, data analysis, hypothesis test)
+- Expandable details with full metadata
+
+### World Model View (`/world-model/:discoveryId`)
+Interactive knowledge graph:
+- Cytoscape-based graph visualization
+- Node detail panel with relationships
+- Legend panel for node/edge types
+- Zoom, fit, and layout controls
+- Progress overview statistics
+- Relationship analysis (supports, refutes counts)
+- Confidence distribution charts
+
+### Reports (`/reports/:discoveryId`)
+Report generation and viewing:
+- Generate summary, detailed, or executive reports
+- Per-cycle reports for LLM context
+- Markdown rendering with citations
+- Download and delete reports
+- Configurable confidence thresholds
+
+## Quick Start
 
 ### Installation
 
@@ -42,7 +121,22 @@ pip install -e ".[dev]"
 export ANTHROPIC_API_KEY='your-api-key-here'
 ```
 
-### Basic Usage
+### Starting the Application
+
+```bash
+# Start the backend API server
+cd backend
+uvicorn main:app --reload --port 8000
+
+# In another terminal, start the frontend
+cd frontend
+npm install
+npm run dev
+```
+
+Access the web interface at `http://localhost:5173`
+
+### Programmatic Usage
 
 ```python
 from kramer import DataAnalysisAgent, AgentConfig
@@ -78,108 +172,131 @@ for finding in result['findings']:
     )
 ```
 
-### Command Line
+## REST API
 
-```bash
-# Run basic example
-python examples/basic_usage.py
+### Discovery Endpoints (`/api/v1/discovery`)
+- `POST /start` - Create and start new discovery
+- `GET /{discovery_id}/status` - Get discovery status
+- `POST /{discovery_id}/stop` - Stop running discovery
+- `GET /{discovery_id}/cycles` - Get all cycles for discovery
+- `GET /{discovery_id}/metrics` - Get real-time metrics
+- `GET /` - List all discoveries
 
-# Run advanced example with world model
-python examples/advanced_usage.py
+### World Model Endpoints (`/api/v1/world-model`)
+- `GET /{discovery_id}/graph` - Get complete graph data with filtering
+- `GET /{discovery_id}/nodes/{node_id}` - Get detailed node information
+- `GET /{discovery_id}/findings` - Get findings with confidence filtering
+- `GET /{discovery_id}/hypotheses` - Get hypotheses
+- `GET /{discovery_id}/papers` - Get all papers discovered
 
-# Run literature search
-python examples/literature_search.py
-```
+### Dataset Endpoints (`/api/v1/datasets`)
+- `POST /upload` - Upload dataset file
+- `GET /` - List uploaded datasets
+- `DELETE /{filename}` - Delete dataset
 
-## 📚 Architecture
+### Report Endpoints (`/api/v1/reports`)
+- `GET /{discovery_id}` - List reports for discovery
+- `POST /{discovery_id}/generate` - Generate new report
+- `GET /{discovery_id}/{report_id}` - Get report content
+- `DELETE /{discovery_id}/{report_id}` - Delete report
+- `GET /{discovery_id}/cycle-reports` - List cycle reports
+
+### WebSocket (`/api/v1/ws`)
+- `GET /ws/{discovery_id}` - Real-time discovery updates
+
+## Architecture
 
 ### Core Components
 
 1. **World Model** (`src/world_model/graph.py`)
    - NetworkX graph for knowledge representation
    - SQLite persistence
-   - Node types: findings, hypotheses, questions
-   - Edge types: supports, contradicts, related_to
+   - Node types: findings, hypotheses, questions, datasets, papers
+   - Edge types: supports, refutes, derives_from, relates_to
 
-2. **Orchestrator** (`src/orchestrator/cycle_manager.py`)
-   - Async task queue for cycle management
-   - Task spawning and prioritization
-   - Budget and resource management
+2. **Orchestrator** (`src/orchestrator/`)
+   - CycleManager for discovery orchestration
+   - AgentCoordinator for multi-agent task management
+   - Budget enforcement and cycle management
+   - Exploration, synthesis, and pivot cycles
 
-3. **Data Analysis Agent** (`src/kramer/data_analysis_agent.py`)
-   - Claude API integration with extended thinking
-   - Multi-step analysis planning
-   - Jupyter notebook generation
+3. **Agents** (`src/agents/`)
+   - **DataAnalysisAgent**: Code generation and execution
+   - **LiteratureAgent**: Paper search and claim extraction
+   - **HypothesisAgent**: Hypothesis generation with novelty detection
+   - **HypothesisTesterAgent**: Automated hypothesis validation
 
 4. **Code Executor** (`src/kramer/code_executor.py`)
    - Safe subprocess-based execution
-   - Timeout handling
+   - Timeout handling (configurable, default 300s)
    - Automatic plot capture
 
-5. **Result Parser** (`src/kramer/result_parser.py`)
-   - Statistics extraction
-   - Insight identification
-   - Provenance linking
+5. **RAG Engine** (`src/rag/`)
+   - ChromaDB vector store for paper embeddings
+   - Semantic search across paper chunks
+   - Embedding-based novelty detection
 
-6. **Literature Agent** (`kramer/agents/literature.py`)
-   - Semantic Scholar integration
-   - Paper search and retrieval
-   - Citation management
+6. **Backend API** (`backend/`)
+   - FastAPI web framework
+   - WebSocket manager for real-time updates
+   - Discovery service for session management
+   - Persistence service for SQLite storage
+
+7. **Frontend** (`frontend/`)
+   - React + TypeScript
+   - Cytoscape for graph visualization
+   - Recharts for metrics visualization
+   - React Query for server state management
 
 ### Directory Structure
 
 ```
 kramer/
+├── backend/
+│   ├── main.py                 # FastAPI application entry
+│   ├── api/                    # REST API routes
+│   │   └── v1/
+│   │       ├── discovery.py
+│   │       ├── world_model.py
+│   │       ├── datasets.py
+│   │       └── reports.py
+│   ├── services/               # Business logic
+│   │   ├── discovery_service.py
+│   │   ├── world_model_service.py
+│   │   └── persistence_service.py
+│   └── bridge.py               # Orchestrator integration
+├── frontend/
+│   ├── src/
+│   │   ├── pages/              # Route components
+│   │   ├── components/         # Reusable UI components
+│   │   ├── hooks/              # Custom React hooks
+│   │   └── api/                # API client functions
+│   └── package.json
 ├── src/
-│   ├── world_model/        # Graph-based knowledge store
-│   ├── orchestrator/       # Task spawning and cycle management
-│   ├── agents/             # Agent implementations
-│   ├── reporting/          # Report generation
-│   └── kramer/             # Data analysis components
+│   ├── world_model/            # Graph-based knowledge store
+│   ├── orchestrator/           # Discovery cycle management
+│   ├── agents/                 # AI agent implementations
+│   ├── rag/                    # RAG engine with ChromaDB
+│   ├── reporting/              # Report generation
+│   └── kramer/                 # Data analysis components
 │       ├── data_analysis_agent.py
 │       ├── code_executor.py
 │       ├── result_parser.py
 │       └── notebook_manager.py
-├── kramer/                 # Additional agent implementations
+├── kramer/                     # Additional agent implementations
 │   ├── agents/
 │   │   └── literature.py
-│   ├── api_clients/
-│   │   └── semantic_scholar.py
-│   └── world_model.py
-├── tests/                  # Comprehensive test suite
-├── examples/               # Usage examples
-├── data/                   # Sample datasets
-└── outputs/                # Generated reports and notebooks
+│   └── api_clients/
+│       └── semantic_scholar.py
+├── tests/                      # Comprehensive test suite
+├── examples/                   # Usage examples
+├── data/                       # Sample datasets
+└── outputs/                    # Generated reports and notebooks
 ```
 
-## 🎯 Development Phases
+## Development
 
-### ✅ Phase 1: Core Infrastructure (Complete)
-- [x] Project structure
-- [x] WorldModel with NetworkX + SQLite
-- [x] Basic orchestrator with async task queue
-- [x] Comprehensive test suite
-
-### ✅ Phase 2: Data Analysis Agent (Complete)
-- [x] DataAnalysisAgent with extended thinking
-- [x] Safe code execution with sandboxing
-- [x] Result parser with provenance tracking
-- [x] Jupyter notebook generation
-- [x] Statistical finding extraction
-
-### ✅ Phase 3: Literature Agent (Complete)
-- [x] Semantic Scholar API integration
-- [x] Paper search and retrieval
-- [x] Citation management
-- [x] Literature findings integration with world model
-
-### ✅ Phase 4: Discovery Loop (Complete)
-- [x] CycleManager for discovery orchestration
-- [x] Priority queue for task management
-- [x] Integration of data and literature agents
-- [x] End-to-end discovery cycles
-
-## 🧪 Testing
+### Testing
 
 ```bash
 # Run all tests
@@ -195,8 +312,6 @@ pytest --cov=kramer --cov=src tests/
 pytest tests/ -k "not integration"
 ```
 
-### Integration Tests
-
 Integration tests require an `ANTHROPIC_API_KEY` environment variable:
 
 ```bash
@@ -204,7 +319,20 @@ export ANTHROPIC_API_KEY='your-key-here'
 pytest tests/test_integration.py
 ```
 
-## 🔧 Configuration
+### Code Quality
+
+```bash
+# Install dev dependencies
+pip install -e ".[dev]"
+
+# Format code
+black src/ kramer/ tests/ backend/
+
+# Lint
+ruff check src/ kramer/ tests/ backend/
+```
+
+## Configuration
 
 ### AgentConfig Options
 
@@ -220,7 +348,18 @@ AgentConfig(
 )
 ```
 
-## 📊 Use Cases
+### Discovery Configuration
+
+When creating a discovery via the API or UI:
+- **objective**: Research question or goal
+- **model**: Claude model to use
+- **dataset_path**: Path to data file for analysis
+- **num_cycles**: Number of discovery cycles to run
+- **total_budget**: Maximum budget in dollars
+- **max_parallel_tasks**: Tasks to run concurrently per cycle
+- **checkpoint_interval**: How often to save progress (cycles)
+
+## Use Cases
 
 ### 1. Exploratory Data Analysis
 ```python
@@ -230,11 +369,15 @@ result = agent.analyze(
 )
 ```
 
-### 2. Hypothesis Testing
+### 2. Hypothesis-Driven Research
 ```python
-result = agent.analyze(
-    objective="Test if income significantly affects satisfaction (p<0.05)",
-    dataset_path="data.csv",
+# Start a discovery that generates and tests hypotheses
+from src.orchestrator.cycle_manager import Orchestrator
+
+orchestrator = Orchestrator(world_model)
+await orchestrator.spawn_cycle(
+    objective="Identify factors affecting customer churn",
+    max_tasks=10
 )
 ```
 
@@ -246,69 +389,37 @@ lit_agent = LiteratureAgent()
 papers = lit_agent.search("machine learning for climate prediction")
 ```
 
-### 4. Full Discovery Cycle
-```python
-from src.orchestrator.cycle_manager import Orchestrator
+### 4. Full Discovery Pipeline
+Use the web interface to:
+1. Configure a new discovery with your objective and dataset
+2. Monitor progress in real-time on the dashboard
+3. Explore findings, hypotheses, and papers in the Explorer
+4. Visualize the knowledge graph in World Model view
+5. Generate reports with citations
 
-orchestrator = Orchestrator(world_model)
-await orchestrator.spawn_cycle(
-    objective="Analyze climate change trends and find supporting literature",
-    max_tasks=10
-)
-```
-
-## 🔐 Security
+## Security
 
 - Code execution is isolated in subprocess
 - Timeout limits prevent infinite loops
 - No network access from executed code (by default)
 - All code is logged with provenance
 - Errors are caught and reported safely
+- Budget limits prevent runaway costs
 
-## 🤝 Contributing
+## Roadmap
 
-```bash
-# Install dev dependencies
-pip install -e ".[dev]"
+- [ ] Multi-trajectory planning and execution
+- [ ] Support for more data formats (Excel, Parquet, SQL)
+- [ ] Interactive refinement based on user feedback
+- [ ] Integration with experiment tracking (MLflow, Weights & Biases)
+- [ ] Export to publication formats (LaTeX, PDF)
+- [ ] Collaborative multi-user sessions
 
-# Run tests
-pytest
-
-# Format code
-black src/ kramer/ tests/
-
-# Lint
-ruff check src/ kramer/ tests/
-```
-
-## 📝 License
+## License
 
 See [LICENSE](LICENSE) file for details.
 
-## 🔮 Roadmap
-
-- [ ] Multi-trajectory planning and execution
-- [ ] Real-time world model querying and updates
-- [ ] Multi-agent collaboration
-- [ ] Support for more data formats (Excel, Parquet, SQL)
-- [ ] Interactive refinement based on user feedback
-- [ ] Automated report generation with citations
-- [ ] Integration with experiment tracking (MLflow, Weights & Biases)
-- [ ] Web interface for exploration
-
-## 📚 Documentation
-
-See the following files for detailed documentation:
-- `PHASE3_DOCUMENTATION.md` - Literature agent implementation details
-- `TESTING.md` - Testing guidelines
-- `CHANGELOG.md` - Version history
-- `CONTRIBUTING.md` - Contribution guidelines
-
-## 🙋 Support
+## Support
 
 - **Issues**: Report bugs and request features via GitHub Issues
 - **Discussions**: Ask questions in GitHub Discussions
-
----
-
-**Built with ❤️ using Claude AI**
