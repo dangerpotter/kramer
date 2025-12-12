@@ -4,6 +4,7 @@ import GraphVisualization from '@/components/visualization/GraphVisualization'
 import GraphControls from '@/components/visualization/GraphControls'
 import LegendPanel from '@/components/visualization/LegendPanel'
 import { useFindings, useHypotheses, usePapers, useGraph } from '@/hooks/useWorldModel'
+import { useDiscoveryMetrics } from '@/hooks/useDiscovery'
 
 // Insights Panel component
 function InsightsPanel({ discoveryId }: { discoveryId: string }) {
@@ -11,6 +12,7 @@ function InsightsPanel({ discoveryId }: { discoveryId: string }) {
   const { data: hypotheses } = useHypotheses(discoveryId)
   const { data: papers } = usePapers(discoveryId)
   const { data: graphData } = useGraph(discoveryId)
+  const { data: metrics } = useDiscoveryMetrics(discoveryId)
 
   const supportedHypotheses = hypotheses?.filter(h => h.status === 'supported') || []
   const refutedHypotheses = hypotheses?.filter(h => h.status === 'refuted') || []
@@ -20,11 +22,8 @@ function InsightsPanel({ discoveryId }: { discoveryId: string }) {
   const mediumConfidenceFindings = findings?.filter(f => f.confidence >= 0.4 && f.confidence < 0.7) || []
   const lowConfidenceFindings = findings?.filter(f => f.confidence < 0.4) || []
 
-  // Get unique cycles
-  const cycles = new Set<number>()
-  findings?.forEach(f => cycles.add(f.cycle_discovered))
-  hypotheses?.forEach(h => cycles.add(h.cycle_generated))
-  const cycleCount = cycles.size
+  // Get cycle count from metrics API (actual cycles run, not unique cycles in data)
+  const cycleCount = metrics?.current_cycle || 0
 
   // Count relationships
   const supportsCount = graphData?.edges?.filter(e => e.edge_type === 'supports').length || 0

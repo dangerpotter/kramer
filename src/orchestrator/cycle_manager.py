@@ -378,8 +378,8 @@ Current World Model State:
 - Findings: {world_model_summary['finding_count']}
 - Papers: {world_model_summary['paper_count']}
 
-Recent Hypotheses:
-{self._format_recent_items(world_model_summary['recent_hypotheses'])}
+Recent Hypotheses (with their IDs for TEST_HYPOTHESIS tasks):
+{self._format_recent_items(world_model_summary['recent_hypotheses'], include_id=True)}
 
 Recent Findings:
 {self._format_recent_items(world_model_summary['recent_findings'])}
@@ -388,7 +388,7 @@ Available task types:
 - ANALYZE_DATA: Analyze a dataset to find patterns and insights
 - SEARCH_LITERATURE: Search scientific literature for relevant papers
 - GENERATE_HYPOTHESIS: Generate new hypotheses based on current knowledge
-- TEST_HYPOTHESIS: Test a specific hypothesis with data or literature
+- TEST_HYPOTHESIS: Test a specific hypothesis with data or literature (REQUIRES hypothesis_id from the list above)
 - SYNTHESIZE_FINDINGS: Synthesize current knowledge into coherent insights
 
 Please create a task decomposition plan. For each task, specify:
@@ -403,8 +403,14 @@ Return your response as a JSON array of tasks in this format:
     "objective": "Search for papers on X",
     "context": {{"max_papers": 10}}
   }},
-  ...
+  {{
+    "task_type": "TEST_HYPOTHESIS",
+    "objective": "Test hypothesis about X",
+    "context": {{"hypothesis_id": "actual-uuid-from-list-above"}}
+  }}
 ]
+
+IMPORTANT: For TEST_HYPOTHESIS tasks, you MUST use an actual hypothesis ID (UUID) from the "Recent Hypotheses" list above, not the hypothesis text or a number.
 
 Create 2-4 tasks that would best advance this research objective."""
 
@@ -535,6 +541,7 @@ Create 2-4 tasks that would best advance this research objective."""
                 summary["hypothesis_count"] += 1
                 if len(summary["recent_hypotheses"]) < 5:
                     summary["recent_hypotheses"].append({
+                        "id": node_id,  # Include hypothesis ID for TEST_HYPOTHESIS tasks
                         "text": data.get("text", ""),
                         "confidence": data.get("confidence", 0.0),
                     })
@@ -552,7 +559,7 @@ Create 2-4 tasks that would best advance this research objective."""
 
         return summary
 
-    def _format_recent_items(self, items: List[Dict[str, Any]]) -> str:
+    def _format_recent_items(self, items: List[Dict[str, Any]], include_id: bool = False) -> str:
         """Format recent items for display in prompt."""
         if not items:
             return "None"
@@ -561,7 +568,11 @@ Create 2-4 tasks that would best advance this research objective."""
         for i, item in enumerate(items[:5], 1):
             text = item.get("text", "")[:100]  # Limit length
             confidence = item.get("confidence", 0.0)
-            formatted.append(f"{i}. {text} (confidence: {confidence:.2f})")
+            item_id = item.get("id", "")
+            if include_id and item_id:
+                formatted.append(f"- ID: {item_id}\n  Text: {text} (confidence: {confidence:.2f})")
+            else:
+                formatted.append(f"{i}. {text} (confidence: {confidence:.2f})")
 
         return "\n".join(formatted)
 

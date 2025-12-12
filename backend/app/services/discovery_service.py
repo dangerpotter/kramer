@@ -166,10 +166,10 @@ class DiscoveryService:
                 tasks=tasks,
                 budget_used=cycle.budget_used,
                 findings_generated=sum(
-                    1 for t in cycle.tasks if t.result and t.result.get("findings")
+                    len(t.result.get("findings", [])) for t in cycle.tasks if t.result
                 ),
                 hypotheses_generated=sum(
-                    1 for t in cycle.tasks if t.result and t.result.get("hypotheses")
+                    len(t.result.get("hypotheses", [])) for t in cycle.tasks if t.result
                 ),
                 created_at=cycle.created_at,
                 started_at=cycle.started_at,

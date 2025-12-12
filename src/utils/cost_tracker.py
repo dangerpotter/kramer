@@ -24,9 +24,18 @@ CLAUDE_HAIKU_3_5_OUTPUT = 4.00 / 1_000_000   # $4 per million output tokens
 CLAUDE_SONNET_3_5_INPUT = 3.00 / 1_000_000
 CLAUDE_SONNET_3_5_OUTPUT = 15.00 / 1_000_000
 
+# Claude Opus 4.5
+CLAUDE_OPUS_4_5_INPUT = 15.00 / 1_000_000   # $15 per million input tokens
+CLAUDE_OPUS_4_5_OUTPUT = 75.00 / 1_000_000  # $75 per million output tokens
+
 
 # Model name mappings to pricing
 MODEL_PRICING = {
+    # Opus 4.5
+    "claude-opus-4-5-20251101": (CLAUDE_OPUS_4_5_INPUT, CLAUDE_OPUS_4_5_OUTPUT),
+    "claude-opus-4-5": (CLAUDE_OPUS_4_5_INPUT, CLAUDE_OPUS_4_5_OUTPUT),
+    "claude-opus-4": (CLAUDE_OPUS_4_5_INPUT, CLAUDE_OPUS_4_5_OUTPUT),
+
     # Sonnet 4.5
     "claude-sonnet-4-20250514": (CLAUDE_SONNET_4_5_INPUT, CLAUDE_SONNET_4_5_OUTPUT),
     "claude-sonnet-4": (CLAUDE_SONNET_4_5_INPUT, CLAUDE_SONNET_4_5_OUTPUT),
@@ -208,6 +217,10 @@ class CostTracker:
 
         # Fuzzy matching - check if model name contains a known model
         model_lower = model.lower()
+
+        # Check for Opus 4.5
+        if "opus-4" in model_lower or "opus4" in model_lower or "opus" in model_lower:
+            return (CLAUDE_OPUS_4_5_INPUT, CLAUDE_OPUS_4_5_OUTPUT)
 
         # Check for Sonnet 4
         if "sonnet-4" in model_lower or "sonnet4" in model_lower:

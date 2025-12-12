@@ -1,5 +1,5 @@
 import { useParams } from 'react-router-dom'
-import { useDiscovery, useDiscoveryMetrics, useStopDiscovery } from '@/hooks/useDiscovery'
+import { useDiscovery, useDiscoveryMetrics, useDiscoveryCycles, useStopDiscovery } from '@/hooks/useDiscovery'
 import { useWebSocket } from '@/hooks/useWebSocket'
 import Card from '@/components/common/Card'
 import Loading from '@/components/common/Loading'
@@ -40,8 +40,17 @@ export default function Dashboard() {
   const { discoveryId } = useParams<{ discoveryId: string }>()
   const { data: status, isLoading } = useDiscovery(discoveryId!)
   const { data: metrics } = useDiscoveryMetrics(discoveryId!)
+  const { data: cyclesData } = useDiscoveryCycles(discoveryId!)
   const { messages, isConnected } = useWebSocket(discoveryId!)
   const stopDiscovery = useStopDiscovery()
+
+  // Extract all tasks from cycles for task distribution chart
+  const allTasks = cyclesData?.flatMap(cycle =>
+    cycle.tasks.map(task => ({
+      ...task,
+      cycle_number: cycle.cycle_number
+    }))
+  ) || []
 
   if (isLoading) return <Loading message="Loading discovery..." />
   if (!status) return <div>Discovery not found</div>
@@ -118,7 +127,7 @@ export default function Dashboard() {
         <CycleTimeline cycles={transformCycleData(metrics)} />
       </div>
 
-      <TaskBreakdown tasks={[]} /> {/* TODO: Need task list from cycles endpoint */}
+      <TaskBreakdown tasks={allTasks} />
 
       {/* Live Feed */}
       <Card title="Live Activity Feed" subtitle="Real-time updates from the discovery process">
