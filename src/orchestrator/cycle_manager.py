@@ -1117,10 +1117,10 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
                             summary = line.strip()[:300]
                             break
 
-                    # Save to database with special cycle_id "final_report"
+                    # Save to database with cycle_id=None to indicate final report
                     await self.persistence_service.save_cycle_report(
                         discovery_id=self.discovery_id,
-                        cycle_id="final_report",
+                        cycle_id=None,
                         summary=summary,
                         full_content=full_content,
                         tasks_completed=0,
@@ -1764,11 +1764,11 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
 
             # Collect all findings
             findings = []
-            for node_id, data in self.world_model.query_nodes(NodeType.FINDING):
+            for node_data in self.world_model.query_nodes(NodeType.FINDING):
                 findings.append({
-                    "id": node_id,
-                    "text": data.get("text", ""),
-                    "confidence": data.get("confidence", 0.5),
+                    "id": node_data.get("node_id"),
+                    "text": node_data.get("text", ""),
+                    "confidence": node_data.get("confidence", 0.5),
                 })
 
             if len(findings) < 2:
@@ -1814,8 +1814,8 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
 
             # Collect all findings
             findings = []
-            for node_id, data in self.world_model.query_nodes(NodeType.FINDING):
-                text = data.get("text", "")
+            for node_data in self.world_model.query_nodes(NodeType.FINDING):
+                text = node_data.get("text", "")
                 if text:
                     findings.append(text)
 
