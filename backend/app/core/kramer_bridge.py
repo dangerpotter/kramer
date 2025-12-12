@@ -242,7 +242,7 @@ class KramerBridge:
         )
 
         # Persist cycles and tasks after completion
-        for i, cycle in enumerate(orchestrator.cycles):
+        for i, cycle in enumerate(orchestrator.cycles.values()):
             await self._persistence.save_cycle(
                 discovery_id=discovery_id,
                 cycle_id=cycle.cycle_id,

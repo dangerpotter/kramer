@@ -1,9 +1,10 @@
 import { Link, useLocation } from 'react-router-dom'
-import { Home, Settings, FileSearch, Network, FileText, Plus } from 'lucide-react'
+import { Home, Settings, FileSearch, Network, FileText, Plus, History } from 'lucide-react'
 import { cn } from '@/utils/cn'
 
 const navItems = [
   { name: 'New Discovery', path: '/configure', icon: Plus },
+  { name: 'History', path: '/history', icon: History },
   { name: 'Dashboard', path: '/dashboard', icon: Home, requiresId: true },
   { name: 'Explorer', path: '/explorer', icon: FileSearch, requiresId: true },
   { name: 'World Model', path: '/world-model', icon: Network, requiresId: true },

@@ -919,16 +919,22 @@ Create 2-4 tasks that would best advance this research objective."""
 
             # Save to database if persistence service available
             if self.persistence_service and self.discovery_id:
-                await self.persistence_service.save_cycle_report(
+                # Save cycle and report in the same transaction to avoid FK violations
+                await self.persistence_service.save_cycle_with_report(
                     discovery_id=self.discovery_id,
                     cycle_id=cycle.cycle_id,
-                    summary=report.summary,
-                    full_content=report.full_content,
+                    cycle_number=cycle_number,
+                    objective=cycle.objective,
+                    cycle_status=cycle.status.value if hasattr(cycle.status, 'value') else str(cycle.status),
+                    budget_used=cycle.budget_used,
+                    started_at=cycle.started_at,
+                    completed_at=cycle.completed_at,
+                    report_summary=report.summary,
+                    report_full_content=report.full_content,
                     tasks_completed=report.tasks_completed,
                     findings_count=report.findings_count,
                     hypotheses_count=report.hypotheses_count,
                     papers_count=report.papers_count,
-                    budget_used=cycle.budget_used,
                     generation_cost=report.generation_cost,
                 )
 

@@ -3,6 +3,7 @@ Persistence service for saving and loading discoveries from PostgreSQL.
 """
 
 import json
+import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from sqlalchemy import select, delete
@@ -198,6 +199,99 @@ class PersistenceService:
             await session.commit()
             await session.refresh(report)
             return report
+
+    async def save_cycle_with_report(
+        self,
+        discovery_id: str,
+        cycle_id: str,
+        cycle_number: int,
+        objective: str,
+        cycle_status: str,
+        budget_used: float,
+        started_at: Optional[datetime],
+        completed_at: Optional[datetime],
+        report_summary: str,
+        report_full_content: str,
+        tasks_completed: int = 0,
+        findings_count: int = 0,
+        hypotheses_count: int = 0,
+        papers_count: int = 0,
+        generation_cost: float = 0.0,
+    ) -> tuple[Cycle, CycleReport]:
+        """
+        Save cycle and report in the same transaction to avoid FK violations.
+
+        This ensures the cycle exists before the report references it.
+        """
+        async with async_session_maker() as session:
+            # Check if cycle exists
+            result = await session.execute(
+                select(Cycle).where(Cycle.id == cycle_id)
+            )
+            cycle = result.scalar_one_or_none()
+
+            if cycle:
+                # Update existing cycle
+                cycle.status = cycle_status
+                cycle.budget_used = budget_used
+                if started_at:
+                    cycle.started_at = started_at
+                if completed_at:
+                    cycle.completed_at = completed_at
+            else:
+                # Create new cycle
+                cycle = Cycle(
+                    id=cycle_id,
+                    discovery_id=discovery_id,
+                    cycle_number=cycle_number,
+                    objective=objective,
+                    status=cycle_status,
+                    budget_used=budget_used,
+                    started_at=started_at,
+                    completed_at=completed_at,
+                )
+                session.add(cycle)
+
+            # Flush to ensure cycle has an ID before creating report
+            await session.flush()
+
+            # Check if report exists
+            result = await session.execute(
+                select(CycleReport).where(CycleReport.cycle_id == cycle_id)
+            )
+            report = result.scalar_one_or_none()
+
+            if report:
+                # Update existing report
+                report.summary = report_summary
+                report.full_content = report_full_content
+                report.tasks_completed = tasks_completed
+                report.findings_count = findings_count
+                report.hypotheses_count = hypotheses_count
+                report.papers_count = papers_count
+                report.budget_used = budget_used
+                report.generation_cost = generation_cost
+            else:
+                # Create new report
+                report = CycleReport(
+                    discovery_id=discovery_id,
+                    cycle_id=cycle_id,
+                    summary=report_summary,
+                    full_content=report_full_content,
+                    tasks_completed=tasks_completed,
+                    findings_count=findings_count,
+                    hypotheses_count=hypotheses_count,
+                    papers_count=papers_count,
+                    budget_used=budget_used,
+                    generation_cost=generation_cost,
+                )
+                session.add(report)
+
+            # Commit both in the same transaction
+            await session.commit()
+            await session.refresh(cycle)
+            await session.refresh(report)
+            return cycle, report
 
     async def get_cycle_reports(self, discovery_id: str) -> List[CycleReport]:
         """Get all cycle reports for a discovery."""
@@ -395,7 +489,8 @@ class PersistenceService:
 
         # Save all edges
         for source, target, edge_data in world_model.graph.edges(data=True):
-            edge_id = f"{source}-{target}-{edge_data.get('edge_type', 'unknown')}"
+            # Use UUID for edge ID instead of composite key
+            edge_id = str(uuid.uuid4())
             await self.save_world_model_edge(
                 discovery_id=discovery_id,
                 edge_id=edge_id,

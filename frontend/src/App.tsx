@@ -7,6 +7,7 @@ import Configure from '@/pages/Configure'
 import Explorer from '@/pages/Explorer'
 import WorldModelView from '@/pages/WorldModelView'
 import Reports from '@/pages/Reports'
+import DiscoveryHistory from '@/pages/DiscoveryHistory'
 
 function App() {
   return (
@@ -18,8 +19,9 @@ function App() {
             <Header />
             <main className="flex-1 overflow-y-auto p-6">
               <Routes>
-                <Route path="/" element={<Navigate to="/configure" replace />} />
+                <Route path="/" element={<Navigate to="/history" replace />} />
                 <Route path="/configure" element={<Configure />} />
+                <Route path="/history" element={<DiscoveryHistory />} />
                 <Route path="/dashboard/:discoveryId" element={<Dashboard />} />
                 <Route path="/explorer/:discoveryId" element={<Explorer />} />
                 <Route path="/world-model/:discoveryId" element={<WorldModelView />} />
