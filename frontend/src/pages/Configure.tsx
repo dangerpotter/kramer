@@ -154,6 +154,9 @@ export default function Configure() {
                 min={0}
                 step={0.01}
               />
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Budget is an estimate. Actual costs may vary slightly (~$0.25 reserved for final report).
+              </p>
             </div>
 
             <div>

@@ -209,3 +209,105 @@ async def delete_report(discovery_id: str, report_id: str):
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Cycle Report Endpoints
+
+class CycleReportResponse(BaseModel):
+    """Cycle report response model."""
+    id: str
+    cycle_id: str
+    discovery_id: str
+    summary: str
+    tasks_completed: int
+    findings_count: int
+    hypotheses_count: int
+    papers_count: int
+    budget_used: float
+    generation_cost: float
+    created_at: str
+
+
+@router.get("/{discovery_id}/cycle-reports")
+async def list_cycle_reports(discovery_id: str):
+    """
+    List all cycle reports for a discovery.
+
+    Args:
+        discovery_id: Discovery ID
+
+    Returns:
+        List of cycle report summaries
+    """
+    try:
+        from app.services.persistence_service import get_persistence_service
+
+        persistence = get_persistence_service()
+        reports = await persistence.get_cycle_reports(discovery_id)
+
+        cycle_reports = []
+        for report in reports:
+            cycle_reports.append({
+                "id": report.id,
+                "cycle_id": report.cycle_id,
+                "discovery_id": report.discovery_id,
+                "summary": report.summary,
+                "tasks_completed": report.tasks_completed,
+                "findings_count": report.findings_count,
+                "hypotheses_count": report.hypotheses_count,
+                "papers_count": report.papers_count,
+                "budget_used": report.budget_used,
+                "generation_cost": report.generation_cost,
+                "created_at": report.created_at.isoformat() if report.created_at else None,
+            })
+
+        return {"cycle_reports": cycle_reports, "count": len(cycle_reports)}
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{discovery_id}/cycle-reports/{cycle_id}")
+async def get_cycle_report(discovery_id: str, cycle_id: str):
+    """
+    Get a specific cycle report's full content.
+
+    Args:
+        discovery_id: Discovery ID
+        cycle_id: Cycle ID
+
+    Returns:
+        Full cycle report content
+    """
+    try:
+        from app.services.persistence_service import get_persistence_service
+
+        persistence = get_persistence_service()
+        report = await persistence.get_cycle_report(cycle_id)
+
+        if not report:
+            raise HTTPException(status_code=404, detail="Cycle report not found")
+
+        if report.discovery_id != discovery_id:
+            raise HTTPException(status_code=404, detail="Cycle report not found for this discovery")
+
+        return {
+            "id": report.id,
+            "cycle_id": report.cycle_id,
+            "discovery_id": report.discovery_id,
+            "summary": report.summary,
+            "full_content": report.full_content,
+            "tasks_completed": report.tasks_completed,
+            "findings_count": report.findings_count,
+            "hypotheses_count": report.hypotheses_count,
+            "papers_count": report.papers_count,
+            "budget_used": report.budget_used,
+            "generation_cost": report.generation_cost,
+            "created_at": report.created_at.isoformat() if report.created_at else None,
+            "format": "markdown",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

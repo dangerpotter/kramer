@@ -11,7 +11,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.database import async_session_maker
 from app.models.db_models import (
-    Discovery, Cycle, Task, WorldModelNode, WorldModelEdge,
+    Discovery, Cycle, Task, WorldModelNode, WorldModelEdge, CycleReport,
     DiscoveryStatus, CycleStatus, TaskStatus
 )
 
@@ -148,6 +148,91 @@ class PersistenceService:
                 .order_by(Cycle.cycle_number)
             )
             return list(result.scalars().all())
+
+    async def save_cycle_report(
+        self,
+        discovery_id: str,
+        cycle_id: str,
+        summary: str,
+        full_content: str,
+        tasks_completed: int = 0,
+        findings_count: int = 0,
+        hypotheses_count: int = 0,
+        papers_count: int = 0,
+        budget_used: float = 0.0,
+        generation_cost: float = 0.0,
+    ) -> CycleReport:
+        """Save or update a cycle report."""
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(CycleReport).where(CycleReport.cycle_id == cycle_id)
+            )
+            report = result.scalar_one_or_none()
+
+            if report:
+                # Update existing
+                report.summary = summary
+                report.full_content = full_content
+                report.tasks_completed = tasks_completed
+                report.findings_count = findings_count
+                report.hypotheses_count = hypotheses_count
+                report.papers_count = papers_count
+                report.budget_used = budget_used
+                report.generation_cost = generation_cost
+            else:
+                # Create new
+                report = CycleReport(
+                    discovery_id=discovery_id,
+                    cycle_id=cycle_id,
+                    summary=summary,
+                    full_content=full_content,
+                    tasks_completed=tasks_completed,
+                    findings_count=findings_count,
+                    hypotheses_count=hypotheses_count,
+                    papers_count=papers_count,
+                    budget_used=budget_used,
+                    generation_cost=generation_cost,
+                )
+                session.add(report)
+
+            await session.commit()
+            await session.refresh(report)
+            return report
+
+    async def get_cycle_reports(self, discovery_id: str) -> List[CycleReport]:
+        """Get all cycle reports for a discovery."""
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(CycleReport)
+                .where(CycleReport.discovery_id == discovery_id)
+                .order_by(CycleReport.created_at)
+            )
+            return list(result.scalars().all())
+
+    async def get_cycle_report(self, cycle_id: str) -> Optional[CycleReport]:
+        """Get a cycle report by cycle ID."""
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(CycleReport).where(CycleReport.cycle_id == cycle_id)
+            )
+            return result.scalar_one_or_none()
+
+    async def get_recent_cycle_summaries(
+        self,
+        discovery_id: str,
+        limit: int = 3
+    ) -> List[str]:
+        """Get compact summaries from recent cycle reports for LLM context."""
+        async with async_session_maker() as session:
+            result = await session.execute(
+                select(CycleReport)
+                .where(CycleReport.discovery_id == discovery_id)
+                .order_by(CycleReport.created_at.desc())
+                .limit(limit)
+            )
+            reports = list(result.scalars().all())
+            # Reverse to get chronological order (oldest first)
+            return [r.summary for r in reversed(reports)]
 
     async def save_task(
         self,

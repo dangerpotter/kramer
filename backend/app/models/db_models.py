@@ -70,6 +70,7 @@ class Discovery(Base):
     cycles = relationship("Cycle", back_populates="discovery", cascade="all, delete-orphan")
     nodes = relationship("WorldModelNode", back_populates="discovery", cascade="all, delete-orphan")
     edges = relationship("WorldModelEdge", back_populates="discovery", cascade="all, delete-orphan")
+    cycle_reports = relationship("CycleReport", back_populates="discovery", cascade="all, delete-orphan")
 
     __table_args__ = (
         Index('idx_discovery_status', 'status'),
@@ -98,6 +99,7 @@ class Cycle(Base):
     # Relationships
     discovery = relationship("Discovery", back_populates="cycles")
     tasks = relationship("Task", back_populates="cycle", cascade="all, delete-orphan")
+    report = relationship("CycleReport", back_populates="cycle", uselist=False)
 
     __table_args__ = (
         Index('idx_cycle_discovery', 'discovery_id'),
@@ -134,6 +136,39 @@ class Task(Base):
     __table_args__ = (
         Index('idx_task_cycle', 'cycle_id'),
         Index('idx_task_status', 'status'),
+    )
+
+
+class CycleReport(Base):
+    """Cycle report model - stores reports generated at end of each cycle."""
+    __tablename__ = "cycle_reports"
+
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    cycle_id = Column(String(36), ForeignKey("cycles.id", ondelete="CASCADE"), nullable=False, unique=True)
+    discovery_id = Column(String(36), ForeignKey("discoveries.id", ondelete="CASCADE"), nullable=False)
+
+    # Report content
+    summary = Column(Text, nullable=False)       # Compact (~500 tokens) for LLM context
+    full_content = Column(Text, nullable=False)  # Full markdown report
+
+    # Metrics snapshot
+    tasks_completed = Column(Integer, default=0)
+    findings_count = Column(Integer, default=0)
+    hypotheses_count = Column(Integer, default=0)
+    papers_count = Column(Integer, default=0)
+    budget_used = Column(Float, default=0.0)
+    generation_cost = Column(Float, default=0.0)
+
+    # Timestamps
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Relationships
+    cycle = relationship("Cycle", back_populates="report")
+    discovery = relationship("Discovery", back_populates="cycle_reports")
+
+    __table_args__ = (
+        Index('idx_cycle_report_discovery', 'discovery_id'),
+        Index('idx_cycle_report_cycle', 'cycle_id'),
     )
 
 

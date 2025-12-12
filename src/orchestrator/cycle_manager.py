@@ -18,6 +18,11 @@ from uuid import uuid4
 import anthropic
 
 from src.world_model.graph import NodeType, WorldModel
+from src.reporting.cycle_report_generator import CycleReportGenerator, CycleReportContent
+from src.reporting.report_generator import ReportGenerator
+
+# Budget reservation for final report generation
+FINAL_REPORT_BUDGET_RESERVE = 0.25  # Reserve $0.25 for final report
 
 
 class TaskStatus(str, Enum):
@@ -237,6 +242,28 @@ class Orchestrator:
         # Concurrency control
         self.semaphore = asyncio.Semaphore(max_concurrent_tasks)
 
+        # Discovery tracking (set when running)
+        self.discovery_id: Optional[str] = None
+        self.persistence_service = None
+
+        # Cycle report tracking
+        self.cycle_reports: List[CycleReportContent] = []
+
+    def set_discovery_context(
+        self,
+        discovery_id: str,
+        persistence_service: Any = None,
+    ) -> None:
+        """
+        Set the discovery context for cycle report persistence.
+
+        Args:
+            discovery_id: The discovery ID for this run
+            persistence_service: The persistence service for saving reports
+        """
+        self.discovery_id = discovery_id
+        self.persistence_service = persistence_service
+
     def create_cycle(
         self,
         objective: str,
@@ -367,10 +394,15 @@ class Orchestrator:
         # Get world model context
         world_model_summary = self._get_world_model_summary()
 
+        # Get previous cycle context
+        previous_cycle_context = self._get_previous_cycle_summaries()
+
         # Create prompt for Claude
         prompt = f"""Given this research objective and current world model state, create a task decomposition plan.
 
 Research Objective: {cycle.objective}
+
+{previous_cycle_context}
 
 Current World Model State:
 - Total nodes: {world_model_summary['total_nodes']}
@@ -576,6 +608,36 @@ Create 2-4 tasks that would best advance this research objective."""
 
         return "\n".join(formatted)
 
+    def _get_previous_cycle_summaries(self, max_cycles: int = 3) -> str:
+        """
+        Get compact summaries from previous cycles for planning context.
+
+        Args:
+            max_cycles: Maximum number of previous cycle summaries to include
+
+        Returns:
+            Formatted string with previous cycle summaries, or empty string if none
+        """
+        if not self.cycle_reports:
+            return ""
+
+        # Get the most recent summaries (up to max_cycles)
+        recent_reports = self.cycle_reports[-max_cycles:]
+
+        if not recent_reports:
+            return ""
+
+        lines = [
+            "Previous Cycle Summaries:",
+            "(Use this context to inform task planning - avoid redundant work)"
+        ]
+
+        for report in recent_reports:
+            lines.append("")
+            lines.append(report.summary)
+
+        return "\n".join(lines)
+
     async def run_cycle(
         self,
         objective: str,
@@ -626,6 +688,9 @@ Create 2-4 tasks that would best advance this research objective."""
         all_cycles.append(current_cycle)
         cycles_run += 1
 
+        # Generate cycle report for initial cycle
+        await self._generate_cycle_report(current_cycle, cycles_run)
+
         # Check for synthesis trigger after initial cycle
         if self.auto_synthesize and self._should_trigger_synthesis(cycles_run - 1):
             print(f"Triggering synthesis at cycle {cycles_run}")
@@ -674,6 +739,9 @@ Create 2-4 tasks that would best advance this research objective."""
             current_cycle = follow_up_cycle
             cycles_run += 1
 
+            # Generate cycle report for follow-up cycle
+            await self._generate_cycle_report(follow_up_cycle, cycles_run)
+
             # Check for synthesis trigger after this cycle
             if self.auto_synthesize and self._should_trigger_synthesis(cycles_run - 1):
                 print(f"Triggering synthesis at cycle {cycles_run}")
@@ -705,12 +773,62 @@ Create 2-4 tasks that would best advance this research objective."""
         # Print detailed budget report
         self.print_budget_report()
 
+        # Generate final report
+        final_report = await self._generate_final_report(objective)
+
         return {
             "cycles": all_cycles,
             "cycles_completed": cycles_run,
             "synthesis_reports": self.synthesis_results,
             "total_cost": self.total_budget_used,
+            "final_report": final_report,
         }
+
+    async def _generate_final_report(self, objective: str) -> Optional[Dict[str, Any]]:
+        """
+        Generate the final discovery report.
+
+        Args:
+            objective: The research objective
+
+        Returns:
+            Dictionary containing report metadata and path, or None if generation failed
+        """
+        try:
+            print("\n📝 Generating final report...")
+
+            generator = ReportGenerator(
+                world_model=self.world_model,
+                anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+                min_confidence=0.7,
+            )
+
+            output_path = Path(self.output_dir) / "final_report.md"
+
+            result = generator.generate_report(
+                output_path=output_path,
+                generate_narratives=True,
+                include_appendix=True,
+            )
+
+            # Track the cost
+            report_cost = result.get("cost", 0.0)
+            self.total_budget_used += report_cost
+
+            print(f"✅ Final report generated: {output_path}")
+            print(f"   Report cost: ${report_cost:.2f}")
+            print(f"   Total cost (including report): ${self.total_budget_used:.2f}")
+
+            return {
+                "report_path": str(output_path),
+                "cost": report_cost,
+                "discovery_count": result.get("discovery_count", 0),
+                "total_findings": result.get("total_findings", 0),
+            }
+
+        except Exception as e:
+            print(f"⚠️  Failed to generate final report: {e}")
+            return None
 
     async def _execute_cycle(self, cycle: Cycle) -> None:
         """
@@ -751,6 +869,78 @@ Create 2-4 tasks that would best advance this research objective."""
             cycle.status = TaskStatus.COMPLETED
 
         cycle.completed_at = datetime.utcnow()
+
+    async def _generate_cycle_report(
+        self,
+        cycle: Cycle,
+        cycle_number: int,
+    ) -> Optional[CycleReportContent]:
+        """
+        Generate and save a cycle report after cycle completion.
+
+        Args:
+            cycle: The completed cycle
+            cycle_number: The cycle number (1-indexed)
+
+        Returns:
+            The generated cycle report content, or None if generation failed
+        """
+        try:
+            generator = CycleReportGenerator(
+                world_model=self.world_model,
+                anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
+                model=os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514"),
+            )
+
+            # Count completed tasks
+            tasks_completed = sum(
+                1 for t in cycle.tasks
+                if t.status == TaskStatus.COMPLETED
+            )
+
+            # Generate the report
+            report = await generator.generate_cycle_report(
+                cycle_id=cycle.cycle_id,
+                cycle_number=cycle_number,
+                objective=cycle.objective,
+                cycle_started_at=cycle.started_at or cycle.created_at,
+                cycle_completed_at=cycle.completed_at,
+                tasks_completed=tasks_completed,
+                budget_used=cycle.budget_used,
+            )
+
+            # Track generation cost
+            self.total_budget_used += report.generation_cost
+            cycle.budget_used += report.generation_cost
+
+            # Save to file
+            output_path = Path(self.output_dir)
+            generator.save_report_to_file(report, output_path, cycle_number)
+
+            # Save to database if persistence service available
+            if self.persistence_service and self.discovery_id:
+                await self.persistence_service.save_cycle_report(
+                    discovery_id=self.discovery_id,
+                    cycle_id=cycle.cycle_id,
+                    summary=report.summary,
+                    full_content=report.full_content,
+                    tasks_completed=report.tasks_completed,
+                    findings_count=report.findings_count,
+                    hypotheses_count=report.hypotheses_count,
+                    papers_count=report.papers_count,
+                    budget_used=cycle.budget_used,
+                    generation_cost=report.generation_cost,
+                )
+
+            # Store for LLM context
+            self.cycle_reports.append(report)
+
+            print(f"📊 Generated cycle {cycle_number} report (cost: ${report.generation_cost:.2f})")
+            return report
+
+        except Exception as e:
+            print(f"⚠️  Failed to generate cycle report: {e}")
+            return None
 
     async def _execute_tasks_parallel(self, tasks: List[Task], cycle: Cycle) -> List[Dict[str, Any]]:
         """
@@ -1072,11 +1262,12 @@ Create 2-4 tasks that would best advance this research objective."""
         Returns:
             True if a new cycle should be spawned
         """
-        # Check if we have budget remaining - use minimum viable threshold
-        budget_remaining = self.max_total_budget - self.total_budget_used
+        # Check if we have budget remaining - reserve budget for final report
+        budget_remaining = self.max_total_budget - self.total_budget_used - FINAL_REPORT_BUDGET_RESERVE
         MIN_VIABLE_BUDGET = 0.10  # $0.10 minimum to attempt another cycle
         if budget_remaining < MIN_VIABLE_BUDGET:
-            print(f"Insufficient budget for new cycle: ${budget_remaining:.2f} remaining")
+            print(f"Insufficient budget for new cycle: ${budget_remaining:.2f} remaining "
+                  f"(reserving ${FINAL_REPORT_BUDGET_RESERVE:.2f} for final report)")
             return False
 
         # Count new hypotheses added during this cycle

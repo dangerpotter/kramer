@@ -123,6 +123,13 @@ class KramerBridge:
             max_cycle_budget=config.get("max_cycle_budget", default_cycle_budget),
             max_total_budget=total_budget,
         )
+
+        # Set discovery context for cycle report persistence
+        orchestrator.set_discovery_context(
+            discovery_id=discovery_id,
+            persistence_service=self._persistence,
+        )
+
         self.orchestrators[discovery_id] = orchestrator
 
         # Save to PostgreSQL
@@ -369,6 +376,12 @@ class KramerBridge:
             default_budget=total_budget,
             max_cycle_budget=config.get("max_cycle_budget", default_cycle_budget),
             max_total_budget=total_budget,
+        )
+
+        # Set discovery context for cycle report persistence
+        orchestrator.set_discovery_context(
+            discovery_id=discovery_id,
+            persistence_service=self._persistence,
         )
 
         # Restore budget used from database
