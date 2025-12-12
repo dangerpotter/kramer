@@ -16,7 +16,11 @@ services:
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - SEMANTIC_SCHOLAR_API_KEY=${SEMANTIC_SCHOLAR_API_KEY}
       - CLAUDE_MODEL=${CLAUDE_MODEL}
+      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_ECHO=${DATABASE_ECHO:-false}
       - PYTHONPATH=/:/app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: unless-stopped
     networks:
       - kramer-network
