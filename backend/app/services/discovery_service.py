@@ -169,7 +169,8 @@ class DiscoveryService:
                     len(t.result.get("findings", [])) for t in cycle.tasks if t.result
                 ),
                 hypotheses_generated=sum(
-                    len(t.result.get("hypotheses", [])) for t in cycle.tasks if t.result
+                    len([f for f in t.result.get("findings", []) if f.get("type") == "hypothesis"])
+                    for t in cycle.tasks if t.result
                 ),
                 created_at=cycle.created_at,
                 started_at=cycle.started_at,

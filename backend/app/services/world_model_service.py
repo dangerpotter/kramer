@@ -284,11 +284,18 @@ class WorldModelService:
 
             metadata = node_data.get("metadata", {})
 
+            # Convert authors to list if stored as comma-separated string
+            authors_raw = metadata.get("authors", [])
+            if isinstance(authors_raw, str):
+                authors = [a.strip() for a in authors_raw.split(",")] if authors_raw else []
+            else:
+                authors = authors_raw if authors_raw else []
+
             papers.append(
                 Paper(
                     paper_id=node_id,
                     title=node_data.get("text", ""),
-                    authors=metadata.get("authors", []),
+                    authors=authors,
                     abstract=metadata.get("abstract"),
                     url=metadata.get("url"),
                     year=metadata.get("year"),
