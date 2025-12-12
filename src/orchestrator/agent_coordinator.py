@@ -92,14 +92,14 @@ def calculate_finding_novelty(
     """
     # Collect existing findings with metadata
     existing_findings: List[Dict[str, Any]] = []
-    for node_id, data in world_model.query_nodes(NodeType.FINDING):
-        existing_text = data.get("text", "")
+    for node_data in world_model.query_nodes(NodeType.FINDING):
+        existing_text = node_data.get("text", "")
         if existing_text:
             existing_findings.append({
                 "text": existing_text,
-                "confidence": data.get("confidence", 0.5),
-                "created_at": data.get("created_at"),
-                "metadata": data.get("metadata", {}),
+                "confidence": node_data.get("confidence", 0.5),
+                "created_at": node_data.get("created_at"),
+                "metadata": node_data.get("metadata", {}),
             })
 
     if not existing_findings:
@@ -208,8 +208,8 @@ def calculate_topic_novelty(
 
     # Collect existing findings
     existing_findings = []
-    for node_id, data in world_model.query_nodes(NodeType.FINDING):
-        existing_text = data.get("text", "")
+    for node_data in world_model.query_nodes(NodeType.FINDING):
+        existing_text = node_data.get("text", "")
         if existing_text:
             existing_findings.append(existing_text)
 
@@ -471,8 +471,8 @@ class AgentCoordinator:
             # Store papers in world model for later retrieval
             # First, collect existing paper IDs to avoid duplicates
             existing_paper_ids = set()
-            for node_id, data in world_model.query_nodes(NodeType.PAPER):
-                meta = data.get("metadata", {})
+            for node_data in world_model.query_nodes(NodeType.PAPER):
+                meta = node_data.get("metadata", {})
                 if meta.get("semantic_scholar_id"):
                     existing_paper_ids.add(meta["semantic_scholar_id"])
                 if meta.get("arxiv_id"):
