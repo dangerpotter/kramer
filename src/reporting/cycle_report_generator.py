@@ -123,26 +123,42 @@ class CycleReportGenerator:
             if data.get("node_type") != "hypothesis":
                 continue
 
+            metadata = data.get("metadata", {})
+
+            # Check if hypothesis was CREATED during this cycle
             node_created = data.get("created_at")
-            if not node_created:
-                continue
+            if node_created:
+                if isinstance(node_created, str):
+                    try:
+                        node_created = datetime.fromisoformat(node_created)
+                    except (ValueError, AttributeError):
+                        node_created = None
 
-            if isinstance(node_created, str):
-                try:
-                    node_created = datetime.fromisoformat(node_created)
-                except (ValueError, AttributeError):
-                    continue
+                if node_created and cycle_started_at <= node_created <= end_time:
+                    generated.append({
+                        "id": node_id,
+                        "text": data.get("text", "")[:150],
+                        "confidence": data.get("confidence", 0.0),
+                        "tested": metadata.get("tested", False),
+                    })
 
-            if cycle_started_at <= node_created <= end_time:
-                hyp_data = {
-                    "id": node_id,
-                    "text": data.get("text", "")[:150],
-                    "confidence": data.get("confidence", 0.0),
-                    "tested": data.get("metadata", {}).get("tested", False),
-                }
-                generated.append(hyp_data)
-                if hyp_data["tested"]:
-                    tested.append(hyp_data)
+            # Check if hypothesis was TESTED during this cycle (using tested_at)
+            tested_at = metadata.get("tested_at")
+            if tested_at:
+                if isinstance(tested_at, str):
+                    try:
+                        tested_at = datetime.fromisoformat(tested_at)
+                    except (ValueError, AttributeError):
+                        tested_at = None
+
+                if tested_at and cycle_started_at <= tested_at <= end_time:
+                    tested.append({
+                        "id": node_id,
+                        "text": data.get("text", "")[:150],
+                        "confidence": data.get("confidence", 0.0),
+                        "outcome": metadata.get("test_outcome", "unknown"),
+                        "test_confidence": metadata.get("test_confidence", 0.0),
+                    })
 
         return {"generated": generated, "tested": tested}
 

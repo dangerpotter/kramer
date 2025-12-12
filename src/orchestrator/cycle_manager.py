@@ -217,6 +217,7 @@ class Orchestrator:
         synthesis_interval: Optional[int] = None,
         synthesis_threshold: float = 0.8,
         output_dir: str = "outputs",
+        dataset_path: Optional[str] = None,
     ):
         """
         Initialize the orchestrator.
@@ -231,8 +232,10 @@ class Orchestrator:
             synthesis_interval: Synthesize every N cycles, or None for auto
             synthesis_threshold: Confidence threshold for completion detection
             output_dir: Directory for report outputs
+            dataset_path: Optional path to dataset for data analysis tasks
         """
         self.world_model = world_model
+        self.dataset_path = dataset_path
         self.max_concurrent_tasks = max_concurrent_tasks
         self.default_budget = default_budget
         self.max_cycle_budget = max_cycle_budget
@@ -371,6 +374,11 @@ class Orchestrator:
         if task_type == TaskType.GENERATE_HYPOTHESIS and "objective" not in task_context:
             task_context["objective"] = cycle.objective
 
+        # Inject dataset_path for tasks that need it (ANALYZE_DATA, TEST_HYPOTHESIS)
+        if self.dataset_path and "dataset_path" not in task_context:
+            if task_type in [TaskType.ANALYZE_DATA, TaskType.TEST_HYPOTHESIS]:
+                task_context["dataset_path"] = self.dataset_path
+
         task = Task(
             task_id=str(uuid4()),
             task_type=task_type,
@@ -466,8 +474,11 @@ Current World Model State:
 - Findings: {world_model_summary['finding_count']}
 - Papers: {world_model_summary['paper_count']}
 
-Recent Hypotheses (with their IDs for TEST_HYPOTHESIS tasks):
+Untested Hypotheses (with their IDs for TEST_HYPOTHESIS tasks):
 {self._format_recent_items(world_model_summary['recent_hypotheses'], include_id=True)}
+
+Already Tested Hypotheses (DO NOT re-test these):
+{self._format_tested_hypotheses(world_model_summary.get('tested_hypotheses', []))}
 
 Recent Findings:
 {self._format_recent_items(world_model_summary['recent_findings'])}
@@ -875,7 +886,8 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
             "hypothesis_count": 0,
             "finding_count": 0,
             "paper_count": 0,
-            "recent_hypotheses": [],
+            "recent_hypotheses": [],  # Untested hypotheses available for testing
+            "tested_hypotheses": [],  # Already tested hypotheses (for context)
             "recent_findings": [],
         }
 
@@ -885,15 +897,26 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
 
             if node_type == "hypothesis":
                 summary["hypothesis_count"] += 1
-                # Only include hypotheses that haven't been conclusively tested
                 metadata = data.get("metadata", {})
                 test_outcome = metadata.get("test_outcome", "")
-                if test_outcome not in ["supported", "refuted"]:
+
+                # Separate untested vs tested hypotheses
+                if test_outcome not in ["supported", "refuted", "inconclusive"]:
+                    # Untested - available for TEST_HYPOTHESIS tasks
                     if len(summary["recent_hypotheses"]) < 5:
                         summary["recent_hypotheses"].append({
-                            "id": node_id,  # Include hypothesis ID for TEST_HYPOTHESIS tasks
+                            "id": node_id,
                             "text": data.get("text", ""),
                             "confidence": data.get("confidence", 0.0),
+                        })
+                else:
+                    # Already tested - include for context
+                    if len(summary["tested_hypotheses"]) < 5:
+                        summary["tested_hypotheses"].append({
+                            "id": node_id,
+                            "text": data.get("text", ""),
+                            "outcome": test_outcome,
+                            "confidence": metadata.get("test_confidence", 0.0),
                         })
 
             elif node_type == "finding":
@@ -923,6 +946,21 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
                 formatted.append(f"- ID: {item_id}\n  Text: {text} (confidence: {confidence:.2f})")
             else:
                 formatted.append(f"{i}. {text} (confidence: {confidence:.2f})")
+
+        return "\n".join(formatted)
+
+    def _format_tested_hypotheses(self, hypotheses: List[Dict[str, Any]]) -> str:
+        """Format tested hypotheses for display in prompt."""
+        if not hypotheses:
+            return "None"
+
+        formatted = []
+        for hyp in hypotheses[:5]:
+            text = hyp.get("text", "")[:80]
+            outcome = hyp.get("outcome", "unknown")
+            confidence = hyp.get("confidence", 0.0)
+            outcome_emoji = {"supported": "\u2713", "refuted": "\u2717", "inconclusive": "?"}.get(outcome, "?")
+            formatted.append(f"- {outcome_emoji} [{outcome.upper()}] {text}... (confidence: {confidence:.2f})")
 
         return "\n".join(formatted)
 
@@ -1715,6 +1753,26 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
         oldest_start = sorted_cycles[-1].started_at
 
         for node_id, data in self.world_model.graph.nodes(data=True):
+            node_type = data.get("node_type")
+
+            # For hypotheses, check tested_at timestamp (when test occurred)
+            # rather than created_at (when hypothesis was generated)
+            if node_type == "hypothesis":
+                metadata = data.get("metadata", {})
+                tested_at = metadata.get("tested_at")
+                if tested_at:
+                    # Parse tested_at datetime
+                    if isinstance(tested_at, str):
+                        try:
+                            tested_at = datetime.fromisoformat(tested_at)
+                        except (ValueError, AttributeError):
+                            continue
+                    # Count if tested during recent cycles
+                    if tested_at >= oldest_start:
+                        hypotheses_tested += 1
+                continue
+
+            # For findings, use created_at
             node_created = data.get("created_at")
             if not node_created:
                 continue
@@ -1730,18 +1788,11 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
             if node_created < oldest_start:
                 continue
 
-            node_type = data.get("node_type")
-
             if node_type == "finding":
                 total_findings += 1
                 novelty = data.get("metadata", {}).get("novelty", 0.0)
                 if novelty > novelty_threshold:
                     novel_findings += 1
-
-            elif node_type == "hypothesis":
-                metadata = data.get("metadata", {})
-                if metadata.get("tested", False):
-                    hypotheses_tested += 1
 
         # Determine if there's meaningful progress
         # Progress requires at least ONE of:

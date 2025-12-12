@@ -122,6 +122,7 @@ class KramerBridge:
             default_budget=total_budget,
             max_cycle_budget=config.get("max_cycle_budget", default_cycle_budget),
             max_total_budget=total_budget,
+            dataset_path=config.get("dataset_path"),
         )
 
         # Set discovery context for cycle report persistence
@@ -403,6 +404,7 @@ class KramerBridge:
             default_budget=total_budget,
             max_cycle_budget=config.get("max_cycle_budget", default_cycle_budget),
             max_total_budget=total_budget,
+            dataset_path=config.get("dataset_path"),
         )
 
         # Set discovery context for cycle report persistence

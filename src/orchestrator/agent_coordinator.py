@@ -730,6 +730,7 @@ class AgentCoordinator:
                 cost=test_result.cost,
                 metadata={
                     "hypothesis_id": test_result.hypothesis_id,
+                    "hypothesis_ids": [test_result.hypothesis_id],  # Array format for _schedule_hypothesis_tests
                     "outcome": test_result.outcome,
                     "confidence": test_result.confidence,
                     "test_type": test_result.test_type,
@@ -777,6 +778,7 @@ class AgentCoordinator:
 
             # Update metadata with test results
             metadata["tested"] = True
+            metadata["tested_at"] = datetime.utcnow().isoformat()  # Track when tested for progress counting
             metadata["test_outcome"] = test_result.outcome
             metadata["test_confidence"] = test_result.confidence
             metadata["test_type"] = test_result.test_type
