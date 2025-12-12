@@ -101,6 +101,7 @@ class Cycle:
     budget_used: float = 0.0
     cycle_type: CycleType = CycleType.EXPLORATION  # Type of cycle
     parent_cycle_id: Optional[str] = None  # For tracking cycle lineage
+    metadata: Dict[str, Any] = field(default_factory=dict)  # Synthesis context and other metadata
 
     def to_dict(self) -> Dict[str, Any]:
         """Convert cycle to dictionary."""
@@ -116,6 +117,7 @@ class Cycle:
             "budget_used": self.budget_used,
             "cycle_type": self.cycle_type.value,
             "parent_cycle_id": self.parent_cycle_id,
+            "metadata": self.metadata,
         }
 
 
@@ -572,13 +574,14 @@ Create 2-4 tasks that would best advance this research objective."""
         previous_cycle_context: str
     ) -> List[tuple]:
         """
-        Plan tasks for a synthesis cycle.
+        Plan tasks for a synthesis cycle using Claude for intelligent planning.
 
         Synthesis cycles focus on:
         1. Consolidating findings into coherent insights
-        2. Identifying gaps and contradictions
-        3. Generating new hypotheses based on synthesis
-        4. Suggesting pivot directions for future exploration
+        2. Identifying and reconciling contradictions
+        3. Analyzing coverage gaps vs original objective
+        4. Generating new hypotheses based on synthesis
+        5. Suggesting pivot directions for future exploration
 
         Args:
             cycle: The synthesis cycle to plan for
@@ -587,6 +590,179 @@ Create 2-4 tasks that would best advance this research objective."""
 
         Returns:
             List of tuples (task_type, objective, context)
+        """
+        # Get synthesis context from cycle metadata
+        contradictions = getattr(cycle, 'metadata', {}).get('contradictions', [])
+        coverage_analysis = getattr(cycle, 'metadata', {}).get('coverage_analysis', {})
+        original_objective = getattr(cycle, 'metadata', {}).get('original_objective', '')
+
+        # If no metadata, compute fresh
+        if not contradictions and not coverage_analysis:
+            contradictions = self._detect_contradictory_findings()
+            coverage_analysis = self._analyze_objective_coverage()
+            original_objective = self._get_original_objective()
+
+        # Try Claude-based planning first
+        try:
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+            if api_key:
+                tasks = self._claude_plan_synthesis_tasks(
+                    cycle, world_model_summary, contradictions,
+                    coverage_analysis, original_objective, previous_cycle_context
+                )
+                if tasks:
+                    return tasks
+        except Exception as e:
+            print(f"Warning: Claude synthesis task planning failed: {e}")
+
+        # Fallback to rule-based planning
+        return self._fallback_synthesis_task_planning(
+            cycle, world_model_summary, contradictions, coverage_analysis
+        )
+
+    def _claude_plan_synthesis_tasks(
+        self,
+        cycle: Cycle,
+        world_model_summary: Dict[str, Any],
+        contradictions: List[Dict[str, Any]],
+        coverage_analysis: Dict[str, Any],
+        original_objective: Optional[str],
+        previous_cycle_context: str,
+    ) -> Optional[List[tuple]]:
+        """
+        Use Claude to intelligently plan synthesis tasks.
+
+        Args:
+            cycle: The synthesis cycle
+            world_model_summary: Current world model state
+            contradictions: Detected contradictions
+            coverage_analysis: Coverage analysis results
+            original_objective: The original research objective
+            previous_cycle_context: Summary of previous cycles
+
+        Returns:
+            List of task tuples, or None if planning fails
+        """
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            return None
+
+        # Format contradictions
+        contradictions_text = "None detected"
+        if contradictions:
+            contradictions_text = "\n".join([
+                f"- Finding A: \"{c['finding1_text'][:80]}...\"\n  Finding B: \"{c['finding2_text'][:80]}...\""
+                for c in contradictions[:5]
+            ])
+
+        prompt = f"""Plan tasks for a synthesis cycle in this research discovery process.
+
+SYNTHESIS CYCLE OBJECTIVE:
+{cycle.objective}
+
+ORIGINAL RESEARCH OBJECTIVE:
+{original_objective or 'Not specified'}
+
+CURRENT KNOWLEDGE STATE:
+- Total findings: {world_model_summary['finding_count']}
+- Total hypotheses: {world_model_summary['hypothesis_count']}
+- Papers reviewed: {world_model_summary['paper_count']}
+
+COVERAGE ANALYSIS:
+- Overall coverage of objective: {coverage_analysis.get('overall_coverage', 0):.0%}
+- Coverage gap: {coverage_analysis.get('coverage_gap', 0):.0%}
+- Aspects covered: {coverage_analysis.get('aspects_covered', 0)}
+
+CONTRADICTORY FINDINGS TO RECONCILE:
+{contradictions_text}
+
+RECENT HYPOTHESES (with IDs for TEST_HYPOTHESIS tasks):
+{self._format_recent_items(world_model_summary['recent_hypotheses'], include_id=True)}
+
+RECENT FINDINGS:
+{self._format_recent_items(world_model_summary['recent_findings'])}
+
+{previous_cycle_context}
+
+AVAILABLE TASK TYPES:
+- SYNTHESIZE_FINDINGS: Consolidate knowledge, identify patterns, draw conclusions
+- GENERATE_HYPOTHESIS: Create new hypotheses based on synthesis insights
+- TEST_HYPOTHESIS: Test a specific hypothesis (requires hypothesis_id from list above)
+- SEARCH_LITERATURE: Search for papers on specific topics (for filling gaps)
+- ANALYZE_DATA: Analyze data to resolve contradictions or fill gaps
+
+PLANNING GUIDELINES:
+1. If contradictions exist: Include tasks to reconcile them (search for evidence, test competing hypotheses)
+2. If coverage gaps exist: Include tasks to explore under-covered aspects
+3. Always include a primary synthesis task
+4. Generate new hypotheses if synthesis reveals new patterns
+5. Prioritize high-impact tasks that advance the original objective
+
+Create 3-6 tasks that best accomplish this synthesis cycle's objectives.
+
+Return as JSON array:
+[
+  {{"task_type": "TASK_TYPE", "objective": "specific objective", "context": {{}}}}
+]
+
+For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
+
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model=os.getenv("CLAUDE_MODEL"),
+            max_tokens=2000,
+            temperature=0.5,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        response_text = response.content[0].text
+
+        # Parse JSON
+        if "```json" in response_text:
+            json_start = response_text.find("```json") + 7
+            json_end = response_text.find("```", json_start)
+            response_text = response_text[json_start:json_end].strip()
+        elif "```" in response_text:
+            json_start = response_text.find("```") + 3
+            json_end = response_text.find("```", json_start)
+            response_text = response_text[json_start:json_end].strip()
+
+        task_plan = json.loads(response_text)
+
+        # Convert to internal format
+        tasks = []
+        for task_dict in task_plan:
+            task_type_str = task_dict.get("task_type", "").upper()
+            try:
+                task_type = TaskType[task_type_str]
+            except KeyError:
+                continue
+
+            objective = str(task_dict.get("objective", ""))
+            context = task_dict.get("context", {}) if isinstance(task_dict.get("context"), dict) else {}
+
+            tasks.append((task_type, objective, context))
+
+        return tasks if tasks else None
+
+    def _fallback_synthesis_task_planning(
+        self,
+        cycle: Cycle,
+        world_model_summary: Dict[str, Any],
+        contradictions: List[Dict[str, Any]],
+        coverage_analysis: Dict[str, Any],
+    ) -> List[tuple]:
+        """
+        Rule-based fallback for synthesis task planning.
+
+        Args:
+            cycle: The synthesis cycle
+            world_model_summary: Current world model state
+            contradictions: Detected contradictions
+            coverage_analysis: Coverage analysis results
+
+        Returns:
+            List of task tuples
         """
         tasks = []
 
@@ -597,25 +773,51 @@ Create 2-4 tasks that would best advance this research objective."""
             {
                 "synthesis_type": "comprehensive",
                 "include_confidence_analysis": True,
-                # TODO: Future enhancement - add contradiction detection
-                # TODO: Future enhancement - add coverage analysis vs original objective
+                "contradictions_to_address": len(contradictions),
+                "coverage_gap": coverage_analysis.get("coverage_gap", 0),
             },
         ))
 
-        # If we have findings but few hypotheses, generate new hypotheses
-        if world_model_summary["finding_count"] > 3 and world_model_summary["hypothesis_count"] < 5:
+        # Add contradiction reconciliation tasks
+        if contradictions:
+            # Search for additional evidence to resolve top contradiction
+            top_contradiction = contradictions[0]
             tasks.append((
-                TaskType.GENERATE_HYPOTHESIS,
-                "Generate hypotheses based on synthesized findings",
+                TaskType.SEARCH_LITERATURE,
+                f"Search for evidence to resolve contradiction between findings about: "
+                f"{top_contradiction['finding1_text'][:50]}... vs {top_contradiction['finding2_text'][:50]}...",
                 {
-                    "focus": "synthesis_derived",
-                    "min_novelty": 0.5,
+                    "purpose": "contradiction_resolution",
+                    "max_papers": 5,
                 },
             ))
 
-        # If we have untested hypotheses, prioritize testing the highest confidence ones
+        # Add coverage gap tasks
+        if coverage_analysis.get("coverage_gap", 0) > 0.4:
+            original_objective = self._get_original_objective() or cycle.objective
+            tasks.append((
+                TaskType.SEARCH_LITERATURE,
+                f"Search for papers covering under-explored aspects of: {original_objective[:80]}",
+                {
+                    "purpose": "coverage_gap",
+                    "max_papers": 5,
+                },
+            ))
+
+        # Generate hypotheses if we have enough findings
+        if world_model_summary["finding_count"] > 3 and world_model_summary["hypothesis_count"] < 5:
+            tasks.append((
+                TaskType.GENERATE_HYPOTHESIS,
+                "Generate hypotheses based on synthesized findings and identified patterns",
+                {
+                    "focus": "synthesis_derived",
+                    "min_novelty": 0.5,
+                    "consider_contradictions": len(contradictions) > 0,
+                },
+            ))
+
+        # Test highest confidence untested hypothesis
         if world_model_summary["recent_hypotheses"]:
-            # Sort by confidence and test top hypothesis
             sorted_hypotheses = sorted(
                 world_model_summary["recent_hypotheses"],
                 key=lambda h: h.get("confidence", 0),
@@ -628,11 +830,6 @@ Create 2-4 tasks that would best advance this research objective."""
                     f"Test high-priority hypothesis: {top_hypothesis['text'][:80]}",
                     {"hypothesis_id": top_hypothesis["id"]},
                 ))
-
-        # TODO: Future enhancement - add task to identify knowledge gaps
-        # TODO: Future enhancement - add task to suggest pivots to unexplored areas
-        # TODO: Future enhancement - add task to reconcile contradictory findings
-        # TODO: Future enhancement - use Claude to intelligently plan synthesis tasks
 
         return tasks
 
@@ -1472,6 +1669,8 @@ Create 2-4 tasks that would best advance this research objective."""
         - Every N exploration cycles (default: 5)
         - When progress has stalled but we haven't hit budget limits
         - When there are contradictory findings that need reconciliation
+        - When coverage of original objective is imbalanced
+        - When Claude assesses that synthesis would be valuable
 
         Returns:
             Dictionary with should_trigger flag and reason
@@ -1505,37 +1704,370 @@ Create 2-4 tasks that would best advance this research objective."""
                 if c.cycle_type == CycleType.EXPLORATION
             ])
 
-        # Check if we should trigger synthesis
-        should_trigger = cycles_since_synthesis >= SYNTHESIS_INTERVAL
+        # Basic interval check
+        interval_trigger = cycles_since_synthesis >= SYNTHESIS_INTERVAL
 
-        # TODO: Future enhancement - detect contradictory findings and trigger synthesis
-        # TODO: Future enhancement - trigger synthesis when coverage of original objective is imbalanced
-        # TODO: Future enhancement - use Claude to assess if synthesis would be valuable
+        # Check for contradictions using embedding service
+        contradictions = self._detect_contradictory_findings()
+        has_contradictions = len(contradictions) > 0
+
+        # Check coverage imbalance
+        coverage_analysis = self._analyze_objective_coverage()
+        has_coverage_gap = coverage_analysis.get("coverage_gap", 0) > 0.4
+
+        # Use Claude to assess synthesis value (if enough cycles have passed)
+        claude_recommends = False
+        claude_reasoning = ""
+        if cycles_since_synthesis >= 3 and not interval_trigger:
+            claude_assessment = self._claude_assess_synthesis_value()
+            claude_recommends = claude_assessment.get("should_synthesize", False)
+            claude_reasoning = claude_assessment.get("reasoning", "")
+
+        # Determine if we should trigger synthesis
+        should_trigger = (
+            interval_trigger or
+            has_contradictions or
+            has_coverage_gap or
+            claude_recommends
+        )
+
+        # Build reason string
+        reasons = []
+        if interval_trigger:
+            reasons.append(f"interval reached ({cycles_since_synthesis} cycles)")
+        if has_contradictions:
+            reasons.append(f"found {len(contradictions)} contradictory findings")
+        if has_coverage_gap:
+            reasons.append(f"coverage gap detected ({coverage_analysis.get('coverage_gap', 0):.1%})")
+        if claude_recommends:
+            reasons.append(f"Claude assessment: {claude_reasoning[:50]}")
 
         return {
             "should_trigger": should_trigger,
             "cycles_since_synthesis": cycles_since_synthesis,
             "synthesis_interval": SYNTHESIS_INTERVAL,
-            "reason": f"Synthesis due after {SYNTHESIS_INTERVAL} exploration cycles" if should_trigger else "Not due for synthesis"
+            "contradictions_found": len(contradictions),
+            "coverage_gap": coverage_analysis.get("coverage_gap", 0),
+            "claude_recommends": claude_recommends,
+            "reason": " | ".join(reasons) if reasons else "Not due for synthesis"
         }
+
+    def _detect_contradictory_findings(self) -> List[Dict[str, Any]]:
+        """
+        Detect potentially contradictory findings using embedding similarity.
+
+        Returns:
+            List of contradiction pairs with their details
+        """
+        try:
+            from src.utils.embedding_service import get_embedding_service
+
+            # Collect all findings
+            findings = []
+            for node_id, data in self.world_model.query_nodes(NodeType.FINDING):
+                findings.append({
+                    "id": node_id,
+                    "text": data.get("text", ""),
+                    "confidence": data.get("confidence", 0.5),
+                })
+
+            if len(findings) < 2:
+                return []
+
+            embedding_service = get_embedding_service()
+            contradictions_raw = embedding_service.find_contradictions(
+                findings,
+                similarity_threshold=0.7,
+                min_confidence_diff=0.3
+            )
+
+            # Format for return
+            contradictions = []
+            for finding1, finding2, similarity in contradictions_raw:
+                contradictions.append({
+                    "finding1_id": finding1.get("id"),
+                    "finding1_text": finding1.get("text", "")[:100],
+                    "finding2_id": finding2.get("id"),
+                    "finding2_text": finding2.get("text", "")[:100],
+                    "similarity": round(similarity, 3),
+                })
+
+            return contradictions
+        except Exception as e:
+            print(f"Warning: Could not detect contradictions: {e}")
+            return []
+
+    def _analyze_objective_coverage(self) -> Dict[str, Any]:
+        """
+        Analyze how well current findings cover the original research objective.
+
+        Returns:
+            Dictionary with coverage metrics
+        """
+        try:
+            from src.utils.embedding_service import get_embedding_service
+
+            # Get original objective
+            original_objective = self._get_original_objective()
+            if not original_objective:
+                return {"coverage_gap": 0.0, "overall_coverage": 1.0}
+
+            # Collect all findings
+            findings = []
+            for node_id, data in self.world_model.query_nodes(NodeType.FINDING):
+                text = data.get("text", "")
+                if text:
+                    findings.append(text)
+
+            if not findings:
+                return {"coverage_gap": 1.0, "overall_coverage": 0.0}
+
+            embedding_service = get_embedding_service()
+            coverage = embedding_service.compute_topic_coverage(
+                original_objective,
+                findings,
+                num_aspects=5
+            )
+
+            return coverage
+        except Exception as e:
+            print(f"Warning: Could not analyze coverage: {e}")
+            return {"coverage_gap": 0.0, "overall_coverage": 0.5}
+
+    def _get_original_objective(self) -> Optional[str]:
+        """Get the original research objective from the first cycle."""
+        if not self.cycles:
+            return None
+
+        # Find the root cycle (no parent)
+        for cycle in self.cycles.values():
+            if cycle.parent_cycle_id is None:
+                return cycle.objective
+
+        # Fallback to first cycle
+        first_cycle = list(self.cycles.values())[0]
+        return first_cycle.objective
+
+    def _claude_assess_synthesis_value(self) -> Dict[str, Any]:
+        """
+        Use Claude to assess whether a synthesis cycle would be valuable now.
+
+        Returns:
+            Dictionary with should_synthesize and reasoning
+        """
+        try:
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+            if not api_key:
+                return {"should_synthesize": False, "reasoning": "No API key"}
+
+            # Get context
+            summary = self._get_world_model_summary()
+            recent_progress = self._check_recent_progress(num_cycles=3)
+
+            prompt = f"""Assess whether a synthesis cycle would be valuable for this research discovery process.
+
+Current State:
+- Total findings: {summary['finding_count']}
+- Total hypotheses: {summary['hypothesis_count']}
+- Total papers reviewed: {summary['paper_count']}
+
+Recent Progress (last 3 cycles):
+- New findings: {recent_progress.get('total_findings', 0)}
+- Hypotheses tested: {recent_progress.get('hypotheses_tested', 0)}
+- Novel findings: {recent_progress.get('novel_findings', 0)}
+- Has meaningful progress: {recent_progress.get('has_progress', False)}
+
+Recent Findings:
+{self._format_recent_items(summary['recent_findings'])}
+
+Recent Hypotheses:
+{self._format_recent_items(summary['recent_hypotheses'])}
+
+A synthesis cycle consolidates findings, identifies gaps and contradictions, and suggests new directions.
+
+Should we trigger a synthesis cycle now? Consider:
+1. Are there enough findings to synthesize meaningfully?
+2. Has progress slowed, suggesting we need to step back and reassess?
+3. Are there apparent gaps or contradictions in the findings?
+4. Would synthesis help identify new productive directions?
+
+Respond with JSON:
+{{"should_synthesize": true/false, "reasoning": "brief explanation (max 50 words)"}}"""
+
+            client = anthropic.Anthropic(api_key=api_key)
+            response = client.messages.create(
+                model=os.getenv("CLAUDE_MODEL"),
+                max_tokens=200,
+                temperature=0.3,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            response_text = response.content[0].text
+
+            # Parse JSON
+            if "```json" in response_text:
+                json_start = response_text.find("```json") + 7
+                json_end = response_text.find("```", json_start)
+                response_text = response_text[json_start:json_end].strip()
+            elif "```" in response_text:
+                json_start = response_text.find("```") + 3
+                json_end = response_text.find("```", json_start)
+                response_text = response_text[json_start:json_end].strip()
+
+            result = json.loads(response_text)
+            return {
+                "should_synthesize": result.get("should_synthesize", False),
+                "reasoning": result.get("reasoning", "")
+            }
+
+        except Exception as e:
+            print(f"Warning: Claude synthesis assessment failed: {e}")
+            return {"should_synthesize": False, "reasoning": f"Error: {str(e)[:30]}"}
 
     def _create_synthesis_objective(self) -> str:
         """
-        Create an objective for a synthesis cycle based on current state.
+        Create an intelligent objective for a synthesis cycle using Claude.
+
+        Analyzes current state, identifies under-explored aspects, and
+        generates a focused synthesis objective.
 
         Returns:
             Synthesis cycle objective string
         """
         # Get current state summary
         summary = self._get_world_model_summary()
+        original_objective = self._get_original_objective()
+        contradictions = self._detect_contradictory_findings()
+        coverage = self._analyze_objective_coverage()
 
-        # TODO: Future enhancement - use Claude to generate more intelligent synthesis objectives
-        # TODO: Future enhancement - identify which aspects of original objective are under-explored
-        # TODO: Future enhancement - identify contradictions that need resolution
+        # Try Claude-based objective generation
+        try:
+            api_key = os.getenv("ANTHROPIC_API_KEY")
+            if api_key:
+                objective = self._claude_generate_synthesis_objective(
+                    summary, original_objective, contradictions, coverage
+                )
+                if objective:
+                    return objective
+        except Exception as e:
+            print(f"Warning: Claude synthesis objective generation failed: {e}")
 
+        # Fallback to rule-based objective generation
+        return self._fallback_synthesis_objective(summary, contradictions, coverage)
+
+    def _claude_generate_synthesis_objective(
+        self,
+        summary: Dict[str, Any],
+        original_objective: Optional[str],
+        contradictions: List[Dict[str, Any]],
+        coverage: Dict[str, Any],
+    ) -> Optional[str]:
+        """
+        Use Claude to generate an intelligent synthesis objective.
+
+        Args:
+            summary: World model summary
+            original_objective: The original research objective
+            contradictions: List of detected contradictions
+            coverage: Coverage analysis results
+
+        Returns:
+            Synthesis objective string, or None if generation fails
+        """
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        if not api_key:
+            return None
+
+        # Format contradictions for prompt
+        contradictions_text = "None detected"
+        if contradictions:
+            contradictions_text = "\n".join([
+                f"- \"{c['finding1_text'][:60]}...\" vs \"{c['finding2_text'][:60]}...\""
+                for c in contradictions[:3]
+            ])
+
+        prompt = f"""Generate a focused synthesis objective for this research discovery process.
+
+Original Research Objective:
+{original_objective or 'Not specified'}
+
+Current Knowledge State:
+- Findings: {summary['finding_count']}
+- Hypotheses: {summary['hypothesis_count']}
+- Papers reviewed: {summary['paper_count']}
+
+Recent Findings:
+{self._format_recent_items(summary['recent_findings'])}
+
+Recent Hypotheses:
+{self._format_recent_items(summary['recent_hypotheses'])}
+
+Coverage Analysis:
+- Overall coverage: {coverage.get('overall_coverage', 0):.1%}
+- Coverage gap: {coverage.get('coverage_gap', 0):.1%}
+- Aspects covered: {coverage.get('aspects_covered', 0)}
+
+Potentially Contradictory Findings:
+{contradictions_text}
+
+Generate a synthesis objective that:
+1. If contradictions exist: Focus on reconciling them
+2. If coverage gaps exist: Identify under-explored aspects to investigate
+3. Otherwise: Consolidate findings into coherent insights and identify new directions
+
+The objective should be specific, actionable, and directly address the most pressing need.
+Keep it to 1-2 sentences, max 100 words.
+
+Respond with just the objective text, no quotes or formatting."""
+
+        client = anthropic.Anthropic(api_key=api_key)
+        response = client.messages.create(
+            model=os.getenv("CLAUDE_MODEL"),
+            max_tokens=200,
+            temperature=0.5,
+            messages=[{"role": "user", "content": prompt}],
+        )
+
+        objective = response.content[0].text.strip()
+
+        # Clean up any quotes or formatting
+        if objective.startswith('"') and objective.endswith('"'):
+            objective = objective[1:-1]
+
+        return objective if objective else None
+
+    def _fallback_synthesis_objective(
+        self,
+        summary: Dict[str, Any],
+        contradictions: List[Dict[str, Any]],
+        coverage: Dict[str, Any],
+    ) -> str:
+        """
+        Generate synthesis objective using rule-based approach.
+
+        Args:
+            summary: World model summary
+            contradictions: List of detected contradictions
+            coverage: Coverage analysis results
+
+        Returns:
+            Synthesis objective string
+        """
+        # Prioritize based on what needs attention
+        if contradictions:
+            return (
+                f"Reconcile {len(contradictions)} contradictory findings and establish "
+                f"which conclusions are best supported by evidence"
+            )
+
+        if coverage.get("coverage_gap", 0) > 0.4:
+            return (
+                f"Analyze coverage gaps in current research and identify under-explored "
+                f"aspects of the original objective (current coverage: {coverage.get('overall_coverage', 0):.0%})"
+            )
+
+        # Default synthesis
         base_objective = "Synthesize and evaluate current knowledge"
-
-        # Add context about what we have
         context_parts = []
         if summary["finding_count"] > 0:
             context_parts.append(f"{summary['finding_count']} findings")
@@ -1543,7 +2075,7 @@ Create 2-4 tasks that would best advance this research objective."""
             context_parts.append(f"{summary['hypothesis_count']} hypotheses")
 
         if context_parts:
-            base_objective = f"{base_objective}: {', '.join(context_parts)}"
+            base_objective = f"{base_objective}: consolidate {', '.join(context_parts)} into coherent insights"
 
         return base_objective
 
@@ -1749,23 +2281,44 @@ Create 2-4 tasks that would best advance this research objective."""
         """
         Create a synthesis cycle for meta-analysis and knowledge consolidation.
 
+        Analyzes the current state to identify:
+        - Gaps in coverage of the original objective
+        - Contradictory findings that need reconciliation
+        - Under-explored areas that might benefit from pivots
+
         Args:
             parent_cycle: The parent cycle that triggered this synthesis
 
         Returns:
             New Cycle object configured for synthesis
         """
-        # Generate synthesis objective
+        # Analyze current state
+        contradictions = self._detect_contradictory_findings()
+        coverage = self._analyze_objective_coverage()
+        original_objective = self._get_original_objective()
+
+        # Log synthesis analysis
+        print(f"   📊 Synthesis Analysis:")
+        if contradictions:
+            print(f"      ⚠️  Found {len(contradictions)} potentially contradictory findings")
+        if coverage.get("coverage_gap", 0) > 0.3:
+            print(f"      📉 Coverage gap: {coverage.get('coverage_gap', 0):.0%} of objective under-explored")
+        print(f"      📈 Current coverage: {coverage.get('overall_coverage', 0):.0%}")
+
+        # Generate synthesis objective (uses Claude if available)
         synthesis_objective = self._create_synthesis_objective()
 
-        # TODO: Future enhancement - analyze original objective and identify gaps
-        # TODO: Future enhancement - identify contradictory findings to reconcile
-        # TODO: Future enhancement - suggest pivots to under-explored areas
+        # Determine appropriate number of tasks based on what needs to be done
+        max_tasks = 5
+        if contradictions:
+            max_tasks += min(len(contradictions), 3)  # Add tasks for reconciliation
+        if coverage.get("coverage_gap", 0) > 0.4:
+            max_tasks += 2  # Add tasks for gap exploration
 
         # Create the synthesis cycle
         new_cycle = self.create_cycle(
             objective=synthesis_objective,
-            max_tasks=5,  # Synthesis cycles are typically smaller
+            max_tasks=min(max_tasks, 10),  # Cap at 10 tasks
         )
 
         # Set cycle type and parent linkage
@@ -1773,7 +2326,14 @@ Create 2-4 tasks that would best advance this research objective."""
         new_cycle.parent_cycle_id = parent_cycle.cycle_id
         new_cycle.status = TaskStatus.PENDING
 
-        print(f"   📊 Created synthesis cycle: {new_cycle.cycle_id}")
+        # Store synthesis context in cycle metadata for task planning
+        new_cycle.metadata = {
+            "contradictions": contradictions,
+            "coverage_analysis": coverage,
+            "original_objective": original_objective,
+        }
+
+        print(f"   📊 Created synthesis cycle: {new_cycle.cycle_id[:8]}...")
         print(f"   📋 Objective: {synthesis_objective[:100]}...")
 
         return new_cycle

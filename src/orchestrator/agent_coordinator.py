@@ -10,14 +10,16 @@ import asyncio
 import os
 import re
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from src.kramer.data_analysis_agent import AgentConfig, DataAnalysisAgent
 from src.kramer.hypothesis_agent import HypothesisAgent
 from src.kramer.hypothesis_tester_agent import HypothesisTesterAgent
 from src.orchestrator.cycle_manager import Task
 from src.world_model.graph import EdgeType, NodeType, WorldModel
+from src.utils.embedding_service import get_embedding_service, EmbeddingService
 
 # Import LiteratureAgent
 from src.kramer.literature_agent import LiteratureAgent
@@ -59,45 +61,200 @@ def _compute_text_similarity(text1: str, text2: str) -> float:
     return intersection / union if union > 0 else 0.0
 
 
-def calculate_finding_novelty(finding_text: str, world_model: WorldModel) -> float:
+def calculate_finding_novelty(
+    finding_text: str,
+    world_model: WorldModel,
+    use_embeddings: bool = True,
+    weight_by_recency: bool = True,
+    weight_by_confidence: bool = True,
+) -> float:
     """
-    Calculate novelty score for a finding based on similarity to existing findings.
+    Calculate novelty score for a finding based on semantic similarity to existing findings.
 
-    Novelty is the inverse of the maximum similarity to any existing finding.
+    Uses embedding-based similarity for better semantic matching. The novelty score
+    considers:
+    - Semantic similarity to existing findings (via embeddings)
+    - Recency weighting (newer findings count more)
+    - Confidence weighting (high-confidence findings count more)
+
+    Novelty is the inverse of the weighted maximum similarity to existing findings.
     A completely unique finding has novelty 1.0, while a duplicate has novelty 0.0.
 
     Args:
         finding_text: The text of the new finding
         world_model: WorldModel containing existing findings
+        use_embeddings: Whether to use embedding-based similarity (True) or Jaccard
+        weight_by_recency: Weight similarity by how recent findings are
+        weight_by_confidence: Weight similarity by finding confidence
 
     Returns:
         Novelty score between 0.0 and 1.0
     """
+    # Collect existing findings with metadata
+    existing_findings: List[Dict[str, Any]] = []
+    for node_id, data in world_model.query_nodes(NodeType.FINDING):
+        existing_text = data.get("text", "")
+        if existing_text:
+            existing_findings.append({
+                "text": existing_text,
+                "confidence": data.get("confidence", 0.5),
+                "created_at": data.get("created_at"),
+                "metadata": data.get("metadata", {}),
+            })
+
+    if not existing_findings:
+        # First finding is maximally novel
+        return 1.0
+
+    # Get embedding service
+    embedding_service = get_embedding_service()
+
+    # Compute similarities
+    if use_embeddings and embedding_service.is_available():
+        # Use embedding-based semantic similarity
+        existing_texts = [f["text"] for f in existing_findings]
+        finding_emb = embedding_service.get_embedding(finding_text)
+
+        if finding_emb is not None:
+            existing_embs = embedding_service.get_embeddings_batch(existing_texts)
+            similarities = []
+
+            for i, (finding, emb) in enumerate(zip(existing_findings, existing_embs)):
+                if emb is None:
+                    sim = _compute_text_similarity(finding_text, finding["text"])
+                else:
+                    sim = EmbeddingService._cosine_similarity(finding_emb, emb)
+
+                # Apply weighting
+                weight = 1.0
+
+                # Recency weighting: recent findings count more
+                if weight_by_recency and finding.get("created_at"):
+                    created_at = finding["created_at"]
+                    if isinstance(created_at, str):
+                        try:
+                            created_at = datetime.fromisoformat(created_at)
+                        except (ValueError, AttributeError):
+                            created_at = None
+
+                    if created_at:
+                        age_hours = (datetime.utcnow() - created_at).total_seconds() / 3600
+                        # Decay factor: findings older than 24 hours count less
+                        recency_weight = max(0.5, 1.0 - (age_hours / 48.0))
+                        weight *= recency_weight
+
+                # Confidence weighting: high-confidence findings count more
+                if weight_by_confidence:
+                    confidence = finding.get("confidence", 0.5)
+                    # Scale weight by confidence (0.5 to 1.5)
+                    confidence_weight = 0.5 + confidence
+                    weight *= confidence_weight
+
+                # Apply weight to similarity
+                weighted_sim = sim * weight
+                similarities.append(weighted_sim)
+
+            max_similarity = max(similarities) if similarities else 0.0
+        else:
+            # Fallback to Jaccard if embedding fails
+            max_similarity = max(
+                _compute_text_similarity(finding_text, f["text"])
+                for f in existing_findings
+            )
+    else:
+        # Use Jaccard similarity as fallback
+        max_similarity = 0.0
+        for finding in existing_findings:
+            sim = _compute_text_similarity(finding_text, finding["text"])
+
+            # Apply confidence weighting even for Jaccard
+            if weight_by_confidence:
+                confidence = finding.get("confidence", 0.5)
+                sim *= (0.5 + confidence)
+
+            max_similarity = max(max_similarity, sim)
+
+    # Novelty is inverse of weighted similarity
+    # Clamp to [0, 1] range since weighting can push values above 1
+    novelty = max(0.0, min(1.0, 1.0 - max_similarity))
+
+    return round(novelty, 3)
+
+
+def calculate_topic_novelty(
+    finding_text: str,
+    world_model: WorldModel,
+    objective: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Calculate topic/domain novelty for a finding.
+
+    Analyzes whether the finding covers a new aspect of the research objective
+    or explores a topic not yet covered by existing findings.
+
+    Args:
+        finding_text: The text of the new finding
+        world_model: WorldModel containing existing findings
+        objective: The original research objective (for coverage analysis)
+
+    Returns:
+        Dictionary with:
+        - topic_novelty: Score 0-1 indicating how novel the topic is
+        - covers_new_aspect: Boolean indicating if it covers a new aspect
+        - closest_topic: Text of the most similar existing finding
+        - objective_relevance: Relevance to original objective (if provided)
+    """
+    embedding_service = get_embedding_service()
+
+    # Collect existing findings
     existing_findings = []
     for node_id, data in world_model.query_nodes(NodeType.FINDING):
         existing_text = data.get("text", "")
         if existing_text:
             existing_findings.append(existing_text)
 
+    result = {
+        "topic_novelty": 1.0,
+        "covers_new_aspect": True,
+        "closest_topic": None,
+        "objective_relevance": None,
+    }
+
     if not existing_findings:
-        # First finding is maximally novel
-        return 1.0
+        return result
 
-    # Calculate similarity to each existing finding
-    max_similarity = 0.0
-    for existing_text in existing_findings:
-        similarity = _compute_text_similarity(finding_text, existing_text)
-        max_similarity = max(max_similarity, similarity)
+    if embedding_service.is_available():
+        # Find max similarity and closest finding
+        max_sim, max_idx = embedding_service.compute_max_similarity(
+            finding_text, existing_findings, return_index=True
+        )
 
-    # Novelty is inverse of similarity
-    # Apply a threshold: if similarity > 0.8, consider it near-duplicate
-    novelty = 1.0 - max_similarity
+        # Topic novelty is inverse of max similarity
+        # but with a softer threshold (topics can be related but still novel)
+        TOPIC_SIMILARITY_THRESHOLD = 0.75
+        if max_sim > TOPIC_SIMILARITY_THRESHOLD:
+            result["topic_novelty"] = round(1.0 - max_sim, 3)
+            result["covers_new_aspect"] = False
+        else:
+            result["topic_novelty"] = round(max(0.5, 1.0 - max_sim * 0.5), 3)
+            result["covers_new_aspect"] = True
 
-    # TODO: Future enhancement - use embedding-based similarity for better semantic matching
-    # TODO: Future enhancement - consider topic/domain novelty, not just text similarity
-    # TODO: Future enhancement - weight by finding confidence and recency
+        if max_idx >= 0:
+            result["closest_topic"] = existing_findings[max_idx][:100]
 
-    return round(novelty, 3)
+        # Check relevance to objective
+        if objective:
+            obj_similarity = embedding_service.compute_similarity(finding_text, objective)
+            result["objective_relevance"] = round(obj_similarity, 3)
+    else:
+        # Fallback to Jaccard
+        max_sim = max(
+            _compute_text_similarity(finding_text, f) for f in existing_findings
+        )
+        result["topic_novelty"] = round(1.0 - max_sim, 3)
+        result["covers_new_aspect"] = max_sim < 0.5
+
+    return result
 
 
 @dataclass
