@@ -410,7 +410,7 @@ Refuting Evidence Criteria: {test_strategy.get('refuting_evidence_criteria', 'No
             metrics = {}
 
             # Parse findings from analysis
-            for finding in final_result.parsed_results.findings:
+            for finding in final_result.get("findings", []):
                 # Determine if finding supports or refutes hypothesis
                 supports = self._evaluate_finding_support(
                     finding.get("text", ""),
@@ -429,18 +429,14 @@ Refuting Evidence Criteria: {test_strategy.get('refuting_evidence_criteria', 'No
                     }
                 )
 
-            # Extract statistical metrics
-            for stat in final_result.parsed_results.statistics:
-                metric_name = stat.get("name", "unknown")
-                metric_value = stat.get("value")
-                if metric_value is not None:
-                    metrics[metric_name] = metric_value
+            # Note: DataAnalysisAgent returns statistics within findings,
+            # not as a separate key
 
             return {
                 "evidence": evidence,
                 "metrics": metrics,
-                "cost": final_result.total_cost,
-                "notebook_path": str(final_result.notebook_path),
+                "cost": final_result.get("cost", 0.0),
+                "notebook_path": final_result.get("notebook_path", ""),
             }
 
         except Exception as e:
