@@ -8,6 +8,9 @@ import anthropic
 
 from kramer.world_model import WorldModel, Finding, Node, NodeType
 from kramer.api_clients.semantic_scholar import SemanticScholarClient, PaperMetadata
+from kramer.api_clients.openalex import OpenAlexClient
+from kramer.api_clients.pubmed import PubMedClient
+from kramer.api_clients.core import COREClient
 from src.utils.cost_tracker import CostTracker
 
 # Import RAG components (optional dependencies)
@@ -51,6 +54,10 @@ class LiteratureAgent:
         world_model: WorldModel,
         anthropic_api_key: str,
         semantic_scholar_api_key: Optional[str] = None,
+        core_api_key: Optional[str] = None,
+        ncbi_api_key: Optional[str] = None,
+        contact_email: str = "research@capella.edu",
+        sources: Optional[List[str]] = None,
         model: str = None,
         paper_processor: Optional["PaperProcessor"] = None,
         rag_engine: Optional["RAGEngine"] = None,
@@ -64,6 +71,11 @@ class LiteratureAgent:
             world_model: World model to store papers and claims
             anthropic_api_key: API key for Claude
             semantic_scholar_api_key: Optional API key for Semantic Scholar
+            core_api_key: Optional API key for CORE (required to use CORE)
+            ncbi_api_key: Optional API key for PubMed (for higher rate limits)
+            contact_email: Contact email for API polite pools
+            sources: List of sources to search. Options: 'semantic_scholar', 'openalex', 'pubmed', 'core'
+                     Defaults to all available sources.
             model: Claude model to use for claim extraction
             paper_processor: Optional PaperProcessor for PDF handling
             rag_engine: Optional RAGEngine for embeddings and retrieval
@@ -72,7 +84,6 @@ class LiteratureAgent:
         """
         self.world_model = world_model
         self.anthropic_client = anthropic.Anthropic(api_key=anthropic_api_key)
-        self.ss_client = SemanticScholarClient(api_key=semantic_scholar_api_key)
         self.model = model or os.getenv("CLAUDE_MODEL")
         self.total_cost: float = 0.0  # Track total API costs
         self.paper_processor = paper_processor
@@ -80,17 +91,41 @@ class LiteratureAgent:
         self.use_full_text = use_full_text and RAG_AVAILABLE
         self.max_papers_to_process = max_papers_to_process
         self.s2_api_key = semantic_scholar_api_key
+        self.contact_email = contact_email
+
+        # Initialize API clients
+        self.ss_client = SemanticScholarClient(api_key=semantic_scholar_api_key)
+        self.openalex_client = OpenAlexClient(email=contact_email)
+        self.pubmed_client = PubMedClient(api_key=ncbi_api_key, email=contact_email)
+        self.core_client = COREClient(api_key=core_api_key) if core_api_key else None
+
+        # Configure enabled sources
+        default_sources = ['semantic_scholar', 'openalex', 'pubmed']
+        if core_api_key:
+            default_sources.append('core')
+        self.sources = sources or default_sources
 
         # Warn if full-text requested but not available
         if use_full_text and not RAG_AVAILABLE:
             print("Warning: Full-text processing requested but RAG dependencies not available")
 
+        # Log enabled sources
+        print(f"Literature agent initialized with sources: {', '.join(self.sources)}")
+
     async def __aenter__(self):
         await self.ss_client.__aenter__()
+        await self.openalex_client.__aenter__()
+        await self.pubmed_client.__aenter__()
+        if self.core_client:
+            await self.core_client.__aenter__()
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.ss_client.__aexit__(exc_type, exc_val, exc_tb)
+        await self.openalex_client.__aexit__(exc_type, exc_val, exc_tb)
+        await self.pubmed_client.__aexit__(exc_type, exc_val, exc_tb)
+        if self.core_client:
+            await self.core_client.__aexit__(exc_type, exc_val, exc_tb)
 
     async def search_and_extract(
         self,
@@ -111,11 +146,14 @@ class LiteratureAgent:
                 - papers: List of paper metadata
                 - claims: List of extracted claims with full citations
                 - cost: Total API cost in dollars
+                - sources_searched: List of sources that were searched
         """
-        # Step 1: Search for papers
+        # Step 1: Search all sources in parallel
         print(f"Searching for papers on: {query}")
-        papers = await self.ss_client.search_papers(query, limit=max_papers)
-        print(f"Found {len(papers)} papers")
+        print(f"Searching sources: {', '.join(self.sources)}")
+
+        papers = await self.search_all_sources(query, max_papers_per_source=max(3, max_papers // len(self.sources)))
+        print(f"Found {len(papers)} unique papers across all sources")
 
         if not papers:
             print("No papers found")
@@ -123,7 +161,11 @@ class LiteratureAgent:
                 "papers": [],
                 "claims": [],
                 "cost": self.total_cost,
+                "sources_searched": self.sources,
             }
+
+        # Limit total papers to process
+        papers = papers[:max_papers]
 
         # Build hypothesis context for full-text extraction
         hypothesis_context = query
@@ -217,13 +259,142 @@ class LiteratureAgent:
 
         print(f"\n✓ Total claims extracted: {len(all_claims)}")
         print(f"✓ Papers with full text: {papers_with_full_text}/{min(len(papers), self.max_papers_to_process)}")
+        print(f"✓ Sources searched: {', '.join(self.sources)}")
         print(f"✓ World model: {self.world_model.summary()}")
 
         return {
             "papers": papers,
             "claims": all_claims,
             "cost": self.total_cost,
+            "sources_searched": self.sources,
         }
+
+    async def search_all_sources(
+        self,
+        query: str,
+        max_papers_per_source: int = 5
+    ) -> List[PaperMetadata]:
+        """
+        Search all configured sources in parallel and deduplicate results.
+
+        Args:
+            query: Search query
+            max_papers_per_source: Maximum papers to retrieve per source
+
+        Returns:
+            Deduplicated list of papers from all sources
+        """
+        tasks = []
+        source_names = []
+
+        if 'semantic_scholar' in self.sources:
+            tasks.append(self._search_semantic_scholar(query, max_papers_per_source))
+            source_names.append('semantic_scholar')
+
+        if 'openalex' in self.sources:
+            tasks.append(self._search_openalex(query, max_papers_per_source))
+            source_names.append('openalex')
+
+        if 'pubmed' in self.sources:
+            tasks.append(self._search_pubmed(query, max_papers_per_source))
+            source_names.append('pubmed')
+
+        if 'core' in self.sources and self.core_client:
+            tasks.append(self._search_core(query, max_papers_per_source))
+            source_names.append('core')
+
+        # Execute all searches in parallel
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Collect results and log per-source counts
+        all_papers = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                print(f"  {source_names[i]}: failed ({result})")
+            else:
+                print(f"  {source_names[i]}: {len(result)} papers")
+                all_papers.extend(result)
+
+        # Deduplicate by DOI
+        return self._deduplicate_papers(all_papers)
+
+    async def _search_semantic_scholar(self, query: str, limit: int) -> List[PaperMetadata]:
+        """Search Semantic Scholar."""
+        try:
+            return await self.ss_client.search_papers(query, limit=limit)
+        except Exception as e:
+            print(f"Semantic Scholar search failed: {e}")
+            return []
+
+    async def _search_openalex(self, query: str, limit: int) -> List[PaperMetadata]:
+        """Search OpenAlex."""
+        try:
+            return await self.openalex_client.search_works(query, limit=limit)
+        except Exception as e:
+            print(f"OpenAlex search failed: {e}")
+            return []
+
+    async def _search_pubmed(self, query: str, limit: int) -> List[PaperMetadata]:
+        """Search PubMed."""
+        try:
+            return await self.pubmed_client.search_and_fetch(query, limit=limit)
+        except Exception as e:
+            print(f"PubMed search failed: {e}")
+            return []
+
+    async def _search_core(self, query: str, limit: int) -> List[PaperMetadata]:
+        """Search CORE."""
+        try:
+            return await self.core_client.search_works(query, limit=limit)
+        except Exception as e:
+            print(f"CORE search failed: {e}")
+            return []
+
+    def _deduplicate_papers(self, papers: List[PaperMetadata]) -> List[PaperMetadata]:
+        """
+        Deduplicate papers by DOI, preferring papers with abstracts.
+
+        Args:
+            papers: List of papers from multiple sources
+
+        Returns:
+            Deduplicated list of papers
+        """
+        seen_dois = {}
+        unique_papers = []
+
+        for paper in papers:
+            if paper.doi:
+                # Normalize DOI for comparison
+                normalized_doi = paper.doi.lower().strip()
+
+                if normalized_doi not in seen_dois:
+                    seen_dois[normalized_doi] = paper
+                    unique_papers.append(paper)
+                else:
+                    # Prefer paper with abstract
+                    existing = seen_dois[normalized_doi]
+                    if not existing.abstract and paper.abstract:
+                        # Replace with paper that has abstract
+                        idx = unique_papers.index(existing)
+                        unique_papers[idx] = paper
+                        seen_dois[normalized_doi] = paper
+            else:
+                # Papers without DOI - check title similarity
+                title_lower = paper.title.lower().strip() if paper.title else ""
+                is_duplicate = False
+
+                for existing in unique_papers:
+                    existing_title = existing.title.lower().strip() if existing.title else ""
+                    # Simple title match (could be improved with fuzzy matching)
+                    if title_lower and existing_title and title_lower == existing_title:
+                        is_duplicate = True
+                        break
+
+                if not is_duplicate:
+                    unique_papers.append(paper)
+
+        return unique_papers
 
     async def process_full_paper(self, paper_id: str) -> Dict[str, Any]:
         """
@@ -526,3 +697,7 @@ Confidence: [0.0-1.0]
     async def close(self):
         """Close API clients."""
         await self.ss_client.close()
+        await self.openalex_client.close()
+        await self.pubmed_client.close()
+        if self.core_client:
+            await self.core_client.close()

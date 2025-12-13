@@ -6,7 +6,7 @@ A comprehensive AI-powered research discovery platform that autonomously runs di
 
 Kramer is an autonomous research system that uses Claude AI to conduct iterative discovery cycles. It combines:
 - **Data Analysis**: Autonomous generation, execution, and analysis of Python code for data science tasks
-- **Literature Integration**: Semantic Scholar and arXiv integration for research paper discovery
+- **Literature Integration**: Multi-source academic paper discovery (Semantic Scholar, arXiv, OpenAlex, PubMed, CORE)
 - **Hypothesis Generation & Testing**: Automated hypothesis generation, novelty detection, and validation
 - **Knowledge Graph**: Graph-based world model with full provenance tracking and relationship mapping
 - **Real-time Web Interface**: Interactive dashboard, graph visualization, and reporting
@@ -36,8 +36,15 @@ Kramer is an autonomous research system that uses Claude AI to conduct iterative
 - **Full Provenance**: All findings linked to source code, papers, and execution metadata
 
 ### Literature Integration
-- **Multi-Source Search**: Semantic Scholar and arXiv API integration
+- **Multi-Source Search**: Parallel search across 5 academic databases:
+  - **Semantic Scholar**: 200M+ papers with citation metrics
+  - **arXiv**: Preprint server for physics, math, CS, and more
+  - **OpenAlex**: 240M+ works, open catalog replacing Microsoft Academic
+  - **PubMed**: 36M+ biomedical and life sciences papers
+  - **CORE**: 200M+ open access papers with full-text availability
+- **Smart Deduplication**: DOI-based deduplication across sources
 - **RAG Engine**: ChromaDB-based vector embeddings for paper chunks
+- **Full-Text Processing**: PDF download, extraction, and semantic indexing
 - **Claim Extraction**: AI-powered extraction of claims from papers
 - **Citation Management**: Automatic bibliography generation with citations
 
@@ -285,9 +292,12 @@ kramer/
 │       └── notebook_manager.py
 ├── kramer/                     # Additional agent implementations
 │   ├── agents/
-│   │   └── literature.py
+│   │   └── literature.py       # Multi-source literature agent
 │   └── api_clients/
-│       └── semantic_scholar.py
+│       ├── semantic_scholar.py # Semantic Scholar API
+│       ├── openalex.py         # OpenAlex API
+│       ├── pubmed.py           # PubMed E-utilities API
+│       └── core.py             # CORE API
 ├── tests/                      # Comprehensive test suite
 ├── examples/                   # Usage examples
 ├── data/                       # Sample datasets
@@ -333,6 +343,23 @@ ruff check src/ kramer/ tests/ backend/
 ```
 
 ## Configuration
+
+### Environment Variables
+
+Create a `.env` file in the project root (see `.env.example`):
+
+```bash
+# Required
+ANTHROPIC_API_KEY=your_anthropic_key
+
+# Literature Sources (optional but recommended)
+SEMANTIC_SCHOLAR_API_KEY=your_s2_key      # Higher rate limits
+CORE_API_KEY=your_core_key                # Required for CORE (free at https://core.ac.uk/services/api)
+NCBI_API_KEY=your_ncbi_key                # Optional, for higher PubMed rate limits
+
+# Database
+DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/dbname
+```
 
 ### AgentConfig Options
 
@@ -383,10 +410,26 @@ await orchestrator.spawn_cycle(
 
 ### 3. Literature Review
 ```python
+import asyncio
 from kramer.agents.literature import LiteratureAgent
+from kramer.world_model import WorldModel
 
-lit_agent = LiteratureAgent()
-papers = lit_agent.search("machine learning for climate prediction")
+async def search_literature():
+    world_model = WorldModel()
+
+    async with LiteratureAgent(
+        world_model=world_model,
+        anthropic_api_key="your-key",
+        core_api_key="your-core-key",  # Enables CORE source
+        sources=['semantic_scholar', 'openalex', 'pubmed', 'core']
+    ) as agent:
+        results = await agent.search_and_extract(
+            query="machine learning for climate prediction",
+            max_papers=20
+        )
+        print(f"Found {len(results['papers'])} papers from {results['sources_searched']}")
+
+asyncio.run(search_literature())
 ```
 
 ### 4. Full Discovery Pipeline
@@ -405,6 +448,46 @@ Use the web interface to:
 - All code is logged with provenance
 - Errors are caught and reported safely
 - Budget limits prevent runaway costs
+
+## Troubleshooting
+
+### Docker Disk Space Issues (Windows/WSL2)
+
+On Windows with Docker Desktop using WSL2, the virtual disk file (`docker_data.vhdx`) can grow very large and **never automatically shrinks**, even when you delete data inside Docker. This can consume hundreds of gigabytes of disk space.
+
+**Symptoms:**
+- C: drive running out of space
+- `C:\Users\<username>\AppData\Local\Docker\wsl\disk\docker_data.vhdx` is very large
+- `docker system df` shows much less usage than the VHDX file size
+
+**Prevention - Add to `~/.wslconfig`:**
+```ini
+[wsl2]
+memory=8GB
+swap=0
+processors=4
+
+[experimental]
+sparseVhd=true
+autoMemoryReclaim=gradual
+```
+
+**Recovery - Reclaim disk space:**
+```powershell
+# 1. Clean up Docker (with Docker running)
+docker system prune -a --volumes -f
+docker builder prune -a -f
+
+# 2. Trim free space inside the VM
+wsl -d docker-desktop -e fstrim /mnt/docker-desktop-disk
+
+# 3. Quit Docker Desktop completely (right-click tray icon -> Quit)
+
+# 4. Compact the VHDX (run in elevated PowerShell)
+Optimize-VHD -Path "C:\Users\<username>\AppData\Local\Docker\wsl\disk\docker_data.vhdx" -Mode Full
+```
+
+**Note:** The build cache alone can consume 8+ GB. Running `docker builder prune -a -f` periodically helps prevent bloat.
 
 ## Roadmap
 
