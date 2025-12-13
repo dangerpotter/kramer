@@ -548,6 +548,7 @@ Refuting Evidence Criteria: {test_strategy.get('refuting_evidence_criteria', 'No
                         "message": "No papers available in world model for literature-based testing",
                         "supports": None,
                         "confidence": 0.0,
+                        "insufficient_data": True,
                     }
                 ],
                 "cost": 0.0,
@@ -692,16 +693,35 @@ Respond ONLY with the JSON array, no additional text.
         Returns:
             Dictionary with outcome, confidence, and reasoning
         """
-        # Count supporting vs refuting evidence
+        # Count supporting vs refuting evidence, separating insufficient_data from neutral
         supporting = [e for e in evidence if e.get("supports") is True]
         refuting = [e for e in evidence if e.get("supports") is False]
-        neutral = [e for e in evidence if e.get("supports") is None]
+        neutral = [e for e in evidence if e.get("supports") is None and not e.get("insufficient_data")]
+        insufficient = [e for e in evidence if e.get("insufficient_data")]
+
+        # Early return for insufficient data (no papers available to evaluate)
+        if insufficient and not supporting and not refuting and not neutral:
+            return {
+                "outcome": "insufficient_evidence",
+                "confidence": 0.0,
+                "reasoning": "Insufficient literature available to evaluate hypothesis. More research is needed before this hypothesis can be properly tested.",
+                "supporting_count": 0,
+                "refuting_count": 0,
+                "neutral_count": 0,
+                "cost": 0.0,
+            }
 
         # Calculate weighted confidence
         confidence = self._calculate_test_confidence(supporting, refuting, statistical_metrics)
 
-        # Determine outcome
-        if len(supporting) > len(refuting) and confidence > 0.6:
+        # Determine outcome with tiered thresholds
+        # Clear majority (2:1 ratio or better) - lower confidence threshold
+        if len(supporting) > len(refuting) * 2 and confidence > 0.3:
+            outcome = "supported"
+        elif len(refuting) > len(supporting) * 2 and confidence > 0.3:
+            outcome = "refuted"
+        # Standard majority - higher confidence threshold
+        elif len(supporting) > len(refuting) and confidence > 0.6:
             outcome = "supported"
         elif len(refuting) > len(supporting) and confidence > 0.6:
             outcome = "refuted"
@@ -741,7 +761,9 @@ Respond ONLY with the JSON array, no additional text.
             Confidence score (0.0 to 1.0)
         """
         if not supporting and not refuting:
-            return 0.0
+            # Return low but non-zero confidence to acknowledge test was performed
+            # This differentiates "tested with neutral results" from "not tested"
+            return 0.15
 
         # Base confidence on evidence count and quality
         total_evidence = len(supporting) + len(refuting)
@@ -811,6 +833,10 @@ Respond ONLY with the JSON array, no additional text.
         elif outcome == "refuted":
             reasoning_parts.append(
                 f"The hypothesis is REFUTED by the available evidence ({len(refuting)} refuting, {len(supporting)} supporting)."
+            )
+        elif outcome == "insufficient_evidence":
+            reasoning_parts.append(
+                "INSUFFICIENT EVIDENCE to evaluate this hypothesis. More literature research is needed."
             )
         else:
             reasoning_parts.append(

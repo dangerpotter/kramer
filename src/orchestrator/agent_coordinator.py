@@ -791,6 +791,9 @@ class AgentCoordinator:
             elif test_result.outcome == "refuted":
                 # Decrease confidence for refuted hypotheses
                 new_confidence = max(0.0, 1.0 - test_result.confidence)
+            elif test_result.outcome == "insufficient_evidence":
+                # Keep original confidence - hypothesis needs more research
+                new_confidence = node_data.get("confidence", 0.5)
             else:
                 # Keep original confidence for inconclusive
                 new_confidence = node_data.get("confidence", 0.5)
