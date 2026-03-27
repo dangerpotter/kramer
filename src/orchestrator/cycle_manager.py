@@ -19,6 +19,7 @@ from src.world_model.graph import NodeType, WorldModel
 from src.reporting.cycle_report_generator import CycleReportGenerator, CycleReportContent
 from src.reporting.report_generator import ReportGenerator
 from src.utils.llm_client import get_llm_client
+from src.orchestrator.planning_memory import PlanningMemory
 
 # Budget reservation for final report generation
 FINAL_REPORT_BUDGET_RESERVE = 0.25  # Reserve $0.25 for final report
@@ -271,6 +272,9 @@ class Orchestrator:
         # Sub-objective tracking for crisper progress metrics
         self.objective_tracker: Optional["ObjectiveTracker"] = None
 
+        # Planning memory for meta-learning across cycles
+        self.planning_memory = PlanningMemory()
+
         # Event callback for real-time progress updates
         self.event_callback: Optional[Callable[[str, str, Dict[str, Any]], None]] = None
 
@@ -467,6 +471,9 @@ class Orchestrator:
         # Get previous cycle context
         previous_cycle_context = self._get_previous_cycle_summaries()
 
+        # Get planning history for meta-learning
+        planning_history = self.planning_memory.get_planning_context(max_outcomes=3)
+
         # Use specialized planning for synthesis cycles
         if cycle.cycle_type == CycleType.SYNTHESIS:
             return self._plan_synthesis_tasks(cycle, world_model_summary, previous_cycle_context)
@@ -477,6 +484,7 @@ class Orchestrator:
 Research Objective: {cycle.objective}
 
 {previous_cycle_context}
+{planning_history}
 
 Current World Model State:
 - Total nodes: {world_model_summary['total_nodes']}
@@ -713,6 +721,9 @@ Unanswered research questions (prioritize these):
                 for c in contradictions[:5]
             ])
 
+        # Get planning history for meta-learning
+        planning_history = self.planning_memory.get_planning_context(max_outcomes=3)
+
         prompt = f"""Plan tasks for a synthesis cycle in this research discovery process.
 
 SYNTHESIS CYCLE OBJECTIVE:
@@ -741,6 +752,7 @@ RECENT FINDINGS:
 {self._format_recent_items(world_model_summary['recent_findings'])}
 
 {previous_cycle_context}
+{planning_history}
 
 AVAILABLE TASK TYPES:
 - SYNTHESIZE_FINDINGS: Consolidate knowledge, identify patterns, draw conclusions
@@ -1079,6 +1091,16 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
         # Generate cycle report for initial cycle
         await self._generate_cycle_report(current_cycle, cycles_run)
 
+        # Record planning outcome
+        planning_outcome = await self.planning_memory.record_outcome(
+            cycle=current_cycle,
+            cycle_number=cycles_run,
+            world_model=self.world_model,
+        )
+        if planning_outcome.reflection:
+            print(f"📝 Planning reflection: {planning_outcome.reflection[:150]}")
+        self.total_budget_used += self.planning_memory.total_cost
+
         # Check for synthesis trigger after initial cycle
         if self.auto_synthesize and self._should_trigger_synthesis(cycles_run - 1):
             print(f"Triggering synthesis at cycle {cycles_run}")
@@ -1144,6 +1166,16 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
 
             # Generate cycle report for follow-up cycle
             await self._generate_cycle_report(follow_up_cycle, cycles_run)
+
+            # Record planning outcome
+            planning_outcome = await self.planning_memory.record_outcome(
+                cycle=follow_up_cycle,
+                cycle_number=cycles_run,
+                world_model=self.world_model,
+            )
+            if planning_outcome.reflection:
+                print(f"📝 Planning reflection: {planning_outcome.reflection[:150]}")
+            self.total_budget_used += self.planning_memory.total_cost
 
             # Check for synthesis trigger after this cycle
             if self.auto_synthesize and self._should_trigger_synthesis(cycles_run - 1):
