@@ -29,6 +29,7 @@ class AgentConfig:
     max_attempts_per_step: int = 3
     quality_threshold: float = 0.7
     step_timeout: int = 120
+    use_code_evolution: bool = True  # Use evolving codebase instead of fresh code each step
 
 
 @dataclass
@@ -97,6 +98,10 @@ class DataAnalysisAgent:
         self.world_model_context: Dict[str, Any] = {}
         self.total_cost: float = 0.0  # Track total API costs
 
+        # Code evolution
+        from src.kramer.analysis_codebase import AnalysisCodebase
+        self.codebase: Optional[AnalysisCodebase] = None
+
     def analyze(
         self,
         objective: str,
@@ -136,6 +141,11 @@ class DataAnalysisAgent:
             },
         )
 
+        # Initialize code evolution if enabled
+        if self.config.use_code_evolution:
+            from src.kramer.analysis_codebase import AnalysisCodebase
+            self.codebase = AnalysisCodebase(dataset_path=dataset_path)
+
         # Perform iterative analysis
         for iteration in range(self.config.max_iterations):
             step_num = iteration + 1
@@ -150,20 +160,38 @@ class DataAnalysisAgent:
 
                 # Generate code (fresh for attempt 0, refinement for subsequent)
                 if attempt == 0:
-                    code, thinking = self._generate_analysis_code(
-                        objective=objective,
-                        dataset_path=dataset_path,
-                        step_number=step_num,
-                    )
+                    if self.codebase is not None:
+                        code = self.codebase.propose_modification(
+                            step_objective=f"Step {step_num}: {objective}",
+                            model=self.config.model,
+                            previous_output=self._get_last_output(),
+                        )
+                        thinking = None  # code evolution doesn't use extended thinking for generation
+                    else:
+                        code, thinking = self._generate_analysis_code(
+                            objective=objective,
+                            dataset_path=dataset_path,
+                            step_number=step_num,
+                        )
                 else:
-                    code, thinking = self._generate_refinement_code(
-                        objective=objective,
-                        dataset_path=dataset_path,
-                        step_number=step_num,
-                        previous_code=prev_code,
-                        previous_output=prev_output,
-                        evaluation_feedback=evaluation,
-                    )
+                    if self.codebase is not None:
+                        code = self.codebase.propose_modification(
+                            step_objective=f"Step {step_num}: {objective}",
+                            model=self.config.model,
+                            previous_output=prev_output,
+                            evaluation_feedback=evaluation,
+                            is_refinement=True,
+                        )
+                        thinking = None
+                    else:
+                        code, thinking = self._generate_refinement_code(
+                            objective=objective,
+                            dataset_path=dataset_path,
+                            step_number=step_num,
+                            previous_code=prev_code,
+                            previous_output=prev_output,
+                            evaluation_feedback=evaluation,
+                        )
 
                 if not code or code.strip() == "":
                     break  # Agent says analysis is complete
@@ -220,6 +248,17 @@ class DataAnalysisAgent:
             # Promote best attempt
             if best_step is None:
                 break  # No code generated, analysis complete
+
+            # Update code evolution codebase
+            if self.codebase is not None and best_step is not None:
+                if best_step.execution_result.success:
+                    self.codebase.accept(
+                        code=best_step.code,
+                        score=best_step.quality_score,
+                        objective=f"Step {step_num}",
+                    )
+                else:
+                    self.codebase.reject()
 
             self.current_trajectory.append(best_step)
 
@@ -279,6 +318,9 @@ Error: `{best_step.execution_result.error}`
                 step.execution_result.success for step in self.current_trajectory
             ),
             "cost": self.total_cost,
+            "final_script": self.codebase.current_script if self.codebase else None,
+            "script_version": self.codebase.version if self.codebase else 0,
+            "script_evolution": self.codebase.to_dict() if self.codebase else None,
         }
 
     def _generate_analysis_code(
@@ -578,6 +620,13 @@ If you believe the analysis is complete and no further steps are needed, respond
                 context_parts.append(f"\n⚠️ Failed: {step.execution_result.error}")
 
         return "\n".join(context_parts)
+
+    def _get_last_output(self) -> str:
+        """Get stdout from the last successful step."""
+        for step in reversed(self.current_trajectory):
+            if step.execution_result.success:
+                return step.execution_result.stdout[:2000]
+        return ""
 
     def _extract_code_from_response(self, text: str) -> str:
         """Extract Python code from markdown code blocks."""

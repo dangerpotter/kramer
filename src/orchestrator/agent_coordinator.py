@@ -359,6 +359,7 @@ class AgentCoordinator:
                 max_attempts_per_step=task.context.get("max_attempts_per_step", 3),
                 quality_threshold=task.context.get("quality_threshold", 0.7),
                 step_timeout=task.context.get("step_timeout", 120),
+                use_code_evolution=task.context.get("use_code_evolution", True),
             )
 
             agent = DataAnalysisAgent(
@@ -391,6 +392,8 @@ class AgentCoordinator:
                     "notebook_path": result.get("notebook_path"),
                     "steps": len(result.get("steps", [])),
                     "world_model_updates": result.get("world_model_updates", []),
+                    "final_script": result.get("final_script"),
+                    "script_version": result.get("script_version", 0),
                 },
             )
 
