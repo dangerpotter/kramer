@@ -19,6 +19,7 @@ from src.orchestrator.cycle_manager import (
     TaskStatus,
     TaskType,
 )
+from src.orchestrator.sub_objectives import ObjectiveTracker
 from src.reporting.report_generator import ReportGenerator
 from src.utils.llm_client import get_llm_client
 from src.world_model.graph import NodeType, WorldModel
@@ -91,6 +92,7 @@ class TreeSearchOrchestrator:
         self.total_cost: float = 0.0
         self.llm_client = get_llm_client()
         self._objective: str = ""
+        self.objective_tracker: Optional[ObjectiveTracker] = None
 
     async def run(
         self,
@@ -140,6 +142,11 @@ class TreeSearchOrchestrator:
             )
             self.branches[branch.branch_id] = branch
             print(f"  🌿 Branch {branch.branch_id[:8]}: {node['text'][:60]}")
+
+        # 2b. Decompose objective into sub-questions for progress tracking
+        self.objective_tracker = ObjectiveTracker(self.world_model)
+        await self.objective_tracker.decompose(objective)
+        print(f"  📋 Decomposed into {len(self.objective_tracker.sub_objectives)} sub-questions")
 
         # 3. Generation loop
         while self.generation < self.config.max_generations:
@@ -537,6 +544,11 @@ Return ONLY the JSON array, no other text."""
             )
             return True
 
+        # Sub-objective completion check
+        if self.objective_tracker is not None and self.objective_tracker.is_complete():
+            print("  📋 Convergence: sub-objectives sufficiently answered")
+            return True
+
         # Max generations reached
         if self.generation >= self.config.max_generations:
             print(f"  ⏰ Max generations ({self.config.max_generations}) reached")
@@ -598,11 +610,24 @@ Return ONLY the JSON array, no other text."""
             for f in all_findings[:30]
         )
 
+        # Include sub-objective progress if available
+        sub_obj_text = ""
+        if self.objective_tracker and self.objective_tracker.sub_objectives:
+            progress = self.objective_tracker._build_progress_result()
+            sub_obj_lines = [f"\n## Sub-Objective Progress ({progress['score']:.0%} complete)\n"]
+            for so in progress['sub_objectives']:
+                status_icon = {"answered": "✅", "partial": "🔶", "unanswered": "❌"}.get(so['status'], "?")
+                sub_obj_lines.append(f"{status_icon} {so['question']}")
+                if so['answer_summary']:
+                    sub_obj_lines.append(f"   Answer: {so['answer_summary'][:150]}")
+            sub_obj_text = "\n".join(sub_obj_lines)
+
         prompt = f"""Given these findings from multiple research branches exploring the objective below, synthesize the key conclusions.
 
 Objective: {objective}
 
 {tree_text}
+{sub_obj_text}
 
 Findings (branches marked as pruned had weaker evidence):
 {findings_text}

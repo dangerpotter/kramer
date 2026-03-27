@@ -268,6 +268,9 @@ class Orchestrator:
         # Cycle report tracking
         self.cycle_reports: List[CycleReportContent] = []
 
+        # Sub-objective tracking for crisper progress metrics
+        self.objective_tracker: Optional["ObjectiveTracker"] = None
+
         # Event callback for real-time progress updates
         self.event_callback: Optional[Callable[[str, str, Dict[str, Any]], None]] = None
 
@@ -521,6 +524,15 @@ IMPORTANT: For TEST_HYPOTHESIS tasks, you MUST use an actual hypothesis ID (UUID
 CRITICAL: hypothesis_id values must be EXACT UUID strings copied verbatim from the 'Untested Hypotheses' list above. Do NOT use integers, abbreviations, or made-up IDs.
 
 Create 2-4 tasks that would best advance this research objective."""
+
+        # Append unanswered sub-questions for focus if available
+        if self.objective_tracker and self.objective_tracker.get_unanswered_questions():
+            unanswered = self.objective_tracker.get_unanswered_questions()
+            unanswered_text = "\n".join(f"- {q}" for q in unanswered)
+            prompt += f"""
+
+Unanswered research questions (prioritize these):
+{unanswered_text}"""
 
         try:
             # Call Claude API
@@ -1055,6 +1067,14 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
         )
         all_cycles.append(current_cycle)
         cycles_run += 1
+
+        # Decompose objective into sub-questions
+        from src.orchestrator.sub_objectives import ObjectiveTracker
+        self.objective_tracker = ObjectiveTracker(self.world_model)
+        await self.objective_tracker.decompose(objective)
+        print(f"📋 Decomposed objective into {len(self.objective_tracker.sub_objectives)} sub-questions:")
+        for i, so in enumerate(self.objective_tracker.sub_objectives, 1):
+            print(f"   {i}. {so.question}")
 
         # Generate cycle report for initial cycle
         await self._generate_cycle_report(current_cycle, cycles_run)
@@ -2854,7 +2874,59 @@ Respond with JSON in this exact format:
 
     def _check_objective_completion(self) -> bool:
         """
-        Check if research objective is complete using combined LLM and heuristic approach.
+        Check if research objective is complete using sub-objective tracking.
+
+        Uses ObjectiveTracker to evaluate which sub-questions have been answered
+        by current findings, providing deterministic progress scoring.
+
+        Falls back to legacy LLM + heuristic approach if no tracker is available.
+
+        Returns:
+            True if objective appears to be complete
+        """
+        if self.objective_tracker is None:
+            # Fallback to old behavior if no tracker
+            return self._check_objective_completion_legacy()
+
+        # Evaluate progress using sub-objectives
+        import asyncio
+        progress = asyncio.get_event_loop().run_until_complete(
+            self.objective_tracker.evaluate_progress()
+        )
+
+        # Track cost
+        self.total_budget_used += progress.get("cost", 0.0)
+
+        # Log progress
+        print(f"\n{'='*60}")
+        print("OBJECTIVE PROGRESS CHECK")
+        print(f"{'='*60}")
+        print(f"  Score: {progress['score']:.1%}")
+        print(f"  Answered: {progress['answered']}/{progress['total']}")
+        print(f"  Partial: {progress['partial']}/{progress['total']}")
+        print(f"  Unanswered: {progress['unanswered']}/{progress['total']}")
+        for so in progress['sub_objectives']:
+            status_icon = {"answered": "✅", "partial": "🔶", "unanswered": "❌"}.get(so['status'], "?")
+            print(f"  {status_icon} {so['question'][:80]}")
+            if so['answer_summary']:
+                print(f"     → {so['answer_summary'][:100]}")
+        print(f"{'='*60}\n")
+
+        # Store for spawn decisions
+        self.last_completion_score = progress['score']
+
+        # Emit event
+        self._emit_event(
+            "progress_update",
+            f"Progress: {progress['answered']}/{progress['total']} sub-objectives answered ({progress['score']:.0%})",
+            progress
+        )
+
+        return self.objective_tracker.is_complete()
+
+    def _check_objective_completion_legacy(self) -> bool:
+        """
+        Legacy: Check if research objective is complete using combined LLM and heuristic approach.
 
         Uses three methods:
         1. LLM-based assessment for semantic understanding
@@ -2953,8 +3025,11 @@ Respond with JSON in this exact format:
         if self.synthesis_interval and (current_cycle_num + 1) % self.synthesis_interval == 0:
             return True
 
-        # Completion-based: Check if objective met
-        if self._check_objective_completion():
+        # Completion-based: Use tracker score if available, else legacy check
+        if self.objective_tracker is not None:
+            if self.objective_tracker.is_complete():
+                return True
+        elif self._check_objective_completion_legacy():
             return True
 
         # Budget-based: 90% of budget used
