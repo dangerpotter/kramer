@@ -2,11 +2,14 @@
 Cost tracking utility for Claude API usage.
 
 Tracks token usage and calculates costs based on Claude API pricing.
-Pricing as of January 2025 - update as needed.
+Pricing as of March 2026 - update as needed.
 """
 
+import logging
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 
 # Claude API pricing (as of January 2025, in dollars per token)
@@ -28,9 +31,26 @@ CLAUDE_SONNET_3_5_OUTPUT = 15.00 / 1_000_000
 CLAUDE_OPUS_4_5_INPUT = 15.00 / 1_000_000   # $15 per million input tokens
 CLAUDE_OPUS_4_5_OUTPUT = 75.00 / 1_000_000  # $75 per million output tokens
 
+# Claude Sonnet 4.6
+CLAUDE_SONNET_4_6_INPUT = 3.00 / 1_000_000   # $3 per million input tokens
+CLAUDE_SONNET_4_6_OUTPUT = 15.00 / 1_000_000  # $15 per million output tokens
+
+# Claude Opus 4.6
+CLAUDE_OPUS_4_6_INPUT = 15.00 / 1_000_000   # $15 per million input tokens
+CLAUDE_OPUS_4_6_OUTPUT = 75.00 / 1_000_000  # $75 per million output tokens
+
+# Default pricing fallback (Sonnet pricing)
+DEFAULT_PRICING = (CLAUDE_SONNET_4_6_INPUT, CLAUDE_SONNET_4_6_OUTPUT)
+
 
 # Model name mappings to pricing
 MODEL_PRICING = {
+    # Opus 4.6
+    "claude-opus-4-6": (CLAUDE_OPUS_4_6_INPUT, CLAUDE_OPUS_4_6_OUTPUT),
+
+    # Sonnet 4.6
+    "claude-sonnet-4-6": (CLAUDE_SONNET_4_6_INPUT, CLAUDE_SONNET_4_6_OUTPUT),
+
     # Opus 4.5
     "claude-opus-4-5-20251101": (CLAUDE_OPUS_4_5_INPUT, CLAUDE_OPUS_4_5_OUTPUT),
     "claude-opus-4-5": (CLAUDE_OPUS_4_5_INPUT, CLAUDE_OPUS_4_5_OUTPUT),
@@ -105,8 +125,6 @@ class CostTracker:
         """
         # Get pricing for model
         pricing = CostTracker._get_model_pricing(model)
-        if not pricing:
-            raise ValueError(f"Unknown model: {model}")
 
         input_rate, output_rate = pricing
 
@@ -135,8 +153,6 @@ class CostTracker:
         """
         # Get pricing for model
         pricing = CostTracker._get_model_pricing(model)
-        if not pricing:
-            raise ValueError(f"Unknown model: {model}")
 
         input_rate, output_rate = pricing
 
@@ -201,7 +217,7 @@ class CostTracker:
         return CostTracker.calculate_cost_detailed(model, input_tokens, output_tokens)
 
     @staticmethod
-    def _get_model_pricing(model: str) -> Optional[tuple[float, float]]:
+    def _get_model_pricing(model: str) -> tuple[float, float]:
         """
         Get pricing for a model.
 
@@ -209,7 +225,7 @@ class CostTracker:
             model: Model name
 
         Returns:
-            Tuple of (input_rate, output_rate) or None if model not found
+            Tuple of (input_rate, output_rate). Returns DEFAULT_PRICING for unknown models.
         """
         # Direct lookup
         if model in MODEL_PRICING:
@@ -217,6 +233,14 @@ class CostTracker:
 
         # Fuzzy matching - check if model name contains a known model
         model_lower = model.lower()
+
+        # Check for Opus 4.6
+        if "opus-4-6" in model_lower or "opus4.6" in model_lower:
+            return (CLAUDE_OPUS_4_6_INPUT, CLAUDE_OPUS_4_6_OUTPUT)
+
+        # Check for Sonnet 4.6
+        if "sonnet-4-6" in model_lower or "sonnet4.6" in model_lower:
+            return (CLAUDE_SONNET_4_6_INPUT, CLAUDE_SONNET_4_6_OUTPUT)
 
         # Check for Opus 4.5
         if "opus-4" in model_lower or "opus4" in model_lower or "opus" in model_lower:
@@ -234,8 +258,9 @@ class CostTracker:
         if "haiku-3-5" in model_lower or "haiku-3.5" in model_lower:
             return (CLAUDE_HAIKU_3_5_INPUT, CLAUDE_HAIKU_3_5_OUTPUT)
 
-        # Unknown model - return None
-        return None
+        # Unknown model - use default pricing and log warning
+        logger.warning(f"Unknown model '{model}', using default (Sonnet) pricing")
+        return DEFAULT_PRICING
 
     @staticmethod
     def format_cost(cost: float) -> str:

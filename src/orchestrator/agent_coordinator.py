@@ -21,8 +21,13 @@ from src.orchestrator.cycle_manager import Task
 from src.world_model.graph import EdgeType, NodeType, WorldModel
 from src.utils.embedding_service import get_embedding_service, EmbeddingService
 
-# Import LiteratureAgent
+# Import LiteratureAgent (prefer multi-source if available)
 from src.kramer.literature_agent import LiteratureAgent
+
+try:
+    from kramer.agents.literature import LiteratureAgent as MultiSourceLiteratureAgent
+except ImportError:
+    MultiSourceLiteratureAgent = None
 
 
 def _tokenize(text: str) -> Set[str]:
@@ -349,7 +354,7 @@ class AgentCoordinator:
             agent_config = AgentConfig(
                 api_key=self.api_key,
                 model=os.getenv("CLAUDE_MODEL"),
-                use_extended_thinking=True,
+                use_extended_thinking=task.context.get("use_extended_thinking", True),
                 max_iterations=task.context.get("max_iterations", 5),
             )
 
@@ -424,8 +429,22 @@ class AgentCoordinator:
                     error="LiteratureAgent not available",
                 )
 
-            # Create literature agent
-            agent = LiteratureAgent()
+            # Prefer multi-source literature agent if available and configured
+            agent = None
+            if MultiSourceLiteratureAgent is not None:
+                has_keys = any([
+                    os.getenv("SEMANTIC_SCHOLAR_API_KEY"),
+                    os.getenv("CORE_API_KEY"),
+                    os.getenv("NCBI_API_KEY"),
+                ])
+                if has_keys:
+                    try:
+                        agent = MultiSourceLiteratureAgent()
+                    except Exception:
+                        pass  # Fall back to basic agent
+
+            if agent is None:
+                agent = LiteratureAgent()
 
             # Determine search approach
             hypothesis = task.context.get("hypothesis")
@@ -670,7 +689,7 @@ class AgentCoordinator:
                 world_model=world_model,
                 api_key=self.api_key,
                 model=os.getenv("CLAUDE_MODEL"),
-                use_extended_thinking=True,
+                use_extended_thinking=task.context.get("use_extended_thinking", True),
             )
 
             # Run hypothesis test

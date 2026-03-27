@@ -7,12 +7,11 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 import json
-import anthropic
-
 from src.kramer.code_executor import CodeExecutor, ExecutionResult
 from src.kramer.result_parser import ResultParser, AnalysisResults
 from src.kramer.notebook_manager import NotebookManager
 from src.utils.cost_tracker import CostTracker
+from src.utils.llm_client import get_llm_client
 
 
 @dataclass
@@ -37,7 +36,7 @@ class AnalysisStep:
     code: str
     execution_result: ExecutionResult
     parsed_results: AnalysisResults
-    思考_content: Optional[str] = None  # Extended thinking content
+    thinking_content: Optional[str] = None  # Extended thinking content
 
 
 class DataAnalysisAgent:
@@ -76,14 +75,7 @@ class DataAnalysisAgent:
         if not self.config.model:
             self.config.model = os.getenv("CLAUDE_MODEL")
 
-        # Get API key from config or environment
-        api_key = self.config.api_key or os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise ValueError(
-                "ANTHROPIC_API_KEY must be provided in config or environment"
-            )
-
-        self.client = anthropic.Anthropic(api_key=api_key)
+        self.client = get_llm_client()
 
         # Initialize components
         self.executor = CodeExecutor(
@@ -172,7 +164,7 @@ class DataAnalysisAgent:
                 code=code,
                 execution_result=execution_result,
                 parsed_results=parsed_results,
-                思考_content=thinking,
+                thinking_content=thinking,
             )
             self.current_trajectory.append(step)
 
@@ -281,7 +273,7 @@ Error: `{execution_result.error}`
                     "budget_tokens": 10000,
                 }
 
-            response = self.client.messages.create(**kwargs)
+            response = self.client.create_message(**kwargs)
 
             # Track API cost
             cost = CostTracker.track_call(self.config.model, response)

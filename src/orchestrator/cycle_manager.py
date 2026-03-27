@@ -15,11 +15,10 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 from uuid import uuid4
 
-import anthropic
-
 from src.world_model.graph import NodeType, WorldModel
 from src.reporting.cycle_report_generator import CycleReportGenerator, CycleReportContent
 from src.reporting.report_generator import ReportGenerator
+from src.utils.llm_client import get_llm_client
 
 # Budget reservation for final report generation
 FINAL_REPORT_BUDGET_RESERVE = 0.25  # Reserve $0.25 for final report
@@ -346,7 +345,7 @@ class Orchestrator:
         objective: str,
         context: Optional[Dict[str, Any]] = None,
         parent_task_id: Optional[str] = None,
-    ) -> Task:
+    ) -> Optional[Task]:
         """
         Create a new task within a cycle.
 
@@ -358,7 +357,7 @@ class Orchestrator:
             parent_task_id: Parent task ID if this is a subtask
 
         Returns:
-            A new Task object
+            A new Task object, or None if validation fails
         """
         if cycle_id not in self.cycles:
             raise ValueError(f"Cycle {cycle_id} not found")
@@ -373,6 +372,13 @@ class Orchestrator:
         task_context = context or {}
         if task_type == TaskType.GENERATE_HYPOTHESIS and "objective" not in task_context:
             task_context["objective"] = cycle.objective
+
+        # Validate hypothesis_id for TEST_HYPOTHESIS tasks
+        if task_type == TaskType.TEST_HYPOTHESIS and task_context.get("hypothesis_id"):
+            hypothesis_id = str(task_context["hypothesis_id"])
+            if not self.world_model.graph.has_node(hypothesis_id):
+                print(f"  ⚠️  Skipping TEST_HYPOTHESIS: hypothesis_id '{hypothesis_id[:20]}...' not found in world model")
+                return None
 
         # Inject dataset_path for tasks that need it (ANALYZE_DATA, TEST_HYPOTHESIS)
         if self.dataset_path and "dataset_path" not in task_context:
@@ -511,18 +517,15 @@ Return your response as a JSON array of tasks in this format:
 
 IMPORTANT: For TEST_HYPOTHESIS tasks, you MUST use an actual hypothesis ID (UUID) from the "Recent Hypotheses" list above, not the hypothesis text or a number.
 
+CRITICAL: hypothesis_id values must be EXACT UUID strings copied verbatim from the 'Untested Hypotheses' list above. Do NOT use integers, abbreviations, or made-up IDs.
+
 Create 2-4 tasks that would best advance this research objective."""
 
         try:
             # Call Claude API
-            api_key = os.getenv("ANTHROPIC_API_KEY")
-            if not api_key:
-                # Fallback to simple planning if no API key
-                return self._fallback_task_planning(cycle)
+            client = get_llm_client()
 
-            client = anthropic.Anthropic(api_key=api_key)
-
-            response = client.messages.create(
+            response = client.create_message(
                 model=os.getenv("CLAUDE_MODEL"),
                 max_tokens=2000,
                 temperature=0.7,
@@ -689,10 +692,6 @@ Create 2-4 tasks that would best advance this research objective."""
         Returns:
             List of task tuples, or None if planning fails
         """
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            return None
-
         # Format contradictions
         contradictions_text = "None detected"
         if contradictions:
@@ -753,8 +752,8 @@ Return as JSON array:
 
 For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
 
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
+        client = get_llm_client()
+        response = client.create_message(
             model=os.getenv("CLAUDE_MODEL"),
             max_tokens=2000,
             temperature=0.5,
@@ -1564,6 +1563,48 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
                             include_appendix=True,
                         )
 
+                        # Extract key insights from synthesis and add as findings
+                        try:
+                            report_path = report_result.get("report")
+                            if report_path and Path(report_path).exists():
+                                report_content = Path(report_path).read_text(encoding="utf-8")[:3000]
+                                llm = get_llm_client()
+                                insight_response = llm.create_message(
+                                    model=os.getenv("CLAUDE_MODEL"),
+                                    max_tokens=1000,
+                                    temperature=0.3,
+                                    messages=[{
+                                        "role": "user",
+                                        "content": (
+                                            f"Extract 3-5 key insights from this synthesis report. "
+                                            f"Return a JSON array of strings, each a concise insight.\n\n"
+                                            f"{report_content}"
+                                        ),
+                                    }],
+                                )
+                                insight_text = ""
+                                for block in insight_response.content:
+                                    if hasattr(block, "type") and block.type == "text":
+                                        insight_text += block.text
+                                if "```json" in insight_text:
+                                    s = insight_text.find("```json") + 7
+                                    e = insight_text.find("```", s)
+                                    insight_text = insight_text[s:e].strip()
+                                elif "```" in insight_text:
+                                    s = insight_text.find("```") + 3
+                                    e = insight_text.find("```", s)
+                                    insight_text = insight_text[s:e].strip()
+                                insights = json.loads(insight_text)
+                                for insight in insights[:5]:
+                                    self.world_model.add_finding(
+                                        text=str(insight),
+                                        confidence=0.7,
+                                        metadata={"source": "synthesis"},
+                                    )
+                                print(f"  Added {min(len(insights), 5)} synthesis insights to world model")
+                        except Exception as synth_err:
+                            print(f"  Warning: Could not extract synthesis insights: {synth_err}")
+
                         # Return results
                         result = TaskResult(
                             success=True,
@@ -1670,10 +1711,11 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
         # Get dataset path from original task context if available
         dataset_path = hypothesis_task.context.get("dataset_path")
 
+        remaining_capacity = cycle.max_tasks - len(cycle.tasks)
+
         # Schedule a test task for each new hypothesis
         for hypothesis_id in hypothesis_ids:
-            # Check if we've already hit max tasks for this cycle
-            if len(cycle.tasks) >= cycle.max_tasks:
+            if remaining_capacity <= 0:
                 print(f"Cycle max tasks ({cycle.max_tasks}) reached, skipping remaining hypothesis tests")
                 break
 
@@ -1693,6 +1735,7 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
 
             # Add task to cycle
             cycle.tasks.append(test_task)
+            remaining_capacity -= 1
             print(f"  → Scheduled TEST_HYPOTHESIS task for {hypothesis_id}")
 
         # Note: These tasks will be picked up in the next execution wave
@@ -2009,10 +2052,6 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
             Dictionary with should_synthesize and reasoning
         """
         try:
-            api_key = os.getenv("ANTHROPIC_API_KEY")
-            if not api_key:
-                return {"should_synthesize": False, "reasoning": "No API key"}
-
             # Get context
             summary = self._get_world_model_summary()
             recent_progress = self._check_recent_progress(num_cycles=3)
@@ -2047,8 +2086,8 @@ Should we trigger a synthesis cycle now? Consider:
 Respond with JSON:
 {{"should_synthesize": true/false, "reasoning": "brief explanation (max 50 words)"}}"""
 
-            client = anthropic.Anthropic(api_key=api_key)
-            response = client.messages.create(
+            client = get_llm_client()
+            response = client.create_message(
                 model=os.getenv("CLAUDE_MODEL"),
                 max_tokens=200,
                 temperature=0.3,
@@ -2127,10 +2166,6 @@ Respond with JSON:
         Returns:
             Synthesis objective string, or None if generation fails
         """
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            return None
-
         # Format contradictions for prompt
         contradictions_text = "None detected"
         if contradictions:
@@ -2173,8 +2208,8 @@ Keep it to 1-2 sentences, max 100 words.
 
 Respond with just the objective text, no quotes or formatting."""
 
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
+        client = get_llm_client()
+        response = client.create_message(
             model=os.getenv("CLAUDE_MODEL"),
             max_tokens=200,
             temperature=0.5,
@@ -2668,22 +2703,12 @@ Respond with JSON in this exact format:
 {{"completion_score": 0.0, "reasoning": "explanation here"}}"""
 
         try:
-            # Call Claude API
-            api_key = os.getenv("ANTHROPIC_API_KEY")
-            if not api_key:
-                print("⚠️  No ANTHROPIC_API_KEY found, skipping LLM assessment")
-                return {
-                    "completion_score": 0.0,
-                    "reasoning": "API key not available",
-                    "error": "No API key"
-                }
+            client = get_llm_client()
 
-            client = anthropic.Anthropic(api_key=api_key)
-
-            response = client.messages.create(
+            response = client.create_message(
                 model=os.getenv("CLAUDE_MODEL"),
                 max_tokens=1000,
-                temperature=0.3,  # Lower temperature for more consistent scoring
+                temperature=0.3,
                 messages=[
                     {"role": "user", "content": prompt}
                 ],

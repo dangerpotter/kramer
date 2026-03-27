@@ -11,11 +11,10 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
-import anthropic
-
 from src.kramer.data_analysis_agent import AgentConfig, DataAnalysisAgent
 from src.world_model.graph import EdgeType, NodeType, WorldModel
 from src.utils.cost_tracker import CostTracker
+from src.utils.llm_client import get_llm_client
 
 
 @dataclass
@@ -72,12 +71,7 @@ class HypothesisTesterAgent:
         self.use_extended_thinking = use_extended_thinking
         self.max_tokens = max_tokens
 
-        # Get API key from parameter or environment
-        api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY must be provided in constructor or environment")
-
-        self.client = anthropic.Anthropic(api_key=api_key)
+        self.client = get_llm_client()
 
         # Will be initialized when needed
         self._data_agent = None
@@ -324,7 +318,7 @@ Respond ONLY with the JSON object, no additional text.
             # Call Claude API
             thinking_param = {"type": "enabled", "budget_tokens": 2000} if self.use_extended_thinking else {"type": "disabled"}
 
-            response = self.client.messages.create(
+            response = self.client.create_message(
                 model=self.model,
                 max_tokens=self.max_tokens,
                 temperature=1.0,
@@ -458,9 +452,60 @@ Refuting Evidence Criteria: {test_strategy.get('refuting_evidence_criteria', 'No
         self, finding_text: str, hypothesis_text: str, test_strategy: Dict[str, Any]
     ) -> bool:
         """
-        Evaluate whether a finding supports the hypothesis.
+        Evaluate whether a finding supports the hypothesis using LLM.
 
-        Uses simple heuristics based on keywords and statistical significance.
+        Falls back to keyword heuristics if LLM call fails.
+
+        Args:
+            finding_text: Text of the finding
+            hypothesis_text: Text of the hypothesis
+            test_strategy: Test strategy from testability assessment
+
+        Returns:
+            True if finding supports hypothesis, False otherwise
+        """
+        try:
+            import json as _json
+
+            prompt = (
+                f'Given hypothesis: "{hypothesis_text}", and finding: "{finding_text}", '
+                f'does this finding support (true) or refute (false) the hypothesis? '
+                f'Return JSON: {{"supports": bool, "reasoning": "..."}}'
+            )
+
+            response = self.client.create_message(
+                model=self.model,
+                max_tokens=300,
+                temperature=0.0,
+                messages=[{"role": "user", "content": prompt}],
+            )
+
+            text = ""
+            for block in response.content:
+                if hasattr(block, "type") and block.type == "text":
+                    text += block.text
+
+            # Parse JSON
+            if "```json" in text:
+                start = text.find("```json") + 7
+                end = text.find("```", start)
+                text = text[start:end].strip()
+            elif "```" in text:
+                start = text.find("```") + 3
+                end = text.find("```", start)
+                text = text[start:end].strip()
+
+            result = _json.loads(text)
+            return bool(result.get("supports", False))
+
+        except Exception:
+            return self._evaluate_finding_support_fallback(finding_text, hypothesis_text, test_strategy)
+
+    def _evaluate_finding_support_fallback(
+        self, finding_text: str, hypothesis_text: str, test_strategy: Dict[str, Any]
+    ) -> bool:
+        """
+        Fallback: evaluate whether a finding supports the hypothesis using keyword heuristics.
 
         Args:
             finding_text: Text of the finding
@@ -474,11 +519,9 @@ Refuting Evidence Criteria: {test_strategy.get('refuting_evidence_criteria', 'No
 
         # Check for statistical significance indicators
         if "p-value" in finding_lower or "p <" in finding_lower or "significant" in finding_lower:
-            # If significant result is mentioned, it likely supports the hypothesis
             if "significant" in finding_lower and "not" not in finding_lower:
                 return True
             if "p <" in finding_lower or "p=" in finding_lower:
-                # Try to extract p-value
                 import re
 
                 p_match = re.search(r"p\s*[<=]\s*(0\.\d+)", finding_lower)
@@ -502,12 +545,10 @@ Refuting Evidence Criteria: {test_strategy.get('refuting_evidence_criteria', 'No
         # Check against supporting criteria if provided
         supporting_criteria = test_strategy.get("supporting_evidence_criteria", "")
         if supporting_criteria:
-            # Simple keyword matching
             criteria_keywords = supporting_criteria.lower().split()
             if any(keyword in finding_lower for keyword in criteria_keywords if len(keyword) > 4):
                 return True
 
-        # Default to neutral/unsupporting if unclear
         return False
 
     def _test_with_literature(self, hypothesis_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -609,7 +650,7 @@ Respond ONLY with the JSON array, no additional text.
             # Call Claude API
             thinking_param = {"type": "enabled", "budget_tokens": 2000} if self.use_extended_thinking else {"type": "disabled"}
 
-            response = self.client.messages.create(
+            response = self.client.create_message(
                 model=self.model,
                 max_tokens=self.max_tokens,
                 temperature=1.0,
