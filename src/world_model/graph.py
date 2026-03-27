@@ -6,14 +6,17 @@ Uses NetworkX for the graph structure and SQLite for persistence.
 
 import asyncio
 import json
+import logging
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 from uuid import uuid4
 
 import networkx as nx
+
+logger = logging.getLogger(__name__)
 
 
 class NodeType(str, Enum):
@@ -45,15 +48,17 @@ class WorldModel:
     The graph can be serialized to SQLite for persistence.
     """
 
-    def __init__(self, db_path: Optional[Path] = None):
+    def __init__(self, db_path: Optional[Path] = None, max_nodes: int = 10000):
         """
         Initialize a new WorldModel.
 
         Args:
             db_path: Path to SQLite database for persistence. If None, creates in-memory.
+            max_nodes: Maximum number of nodes before pruning is triggered.
         """
         self.graph = nx.DiGraph()
         self.db_path = db_path
+        self.max_nodes = max_nodes
 
         # Track creation time
         self.created_at = datetime.utcnow()
@@ -142,6 +147,10 @@ class WorldModel:
         if confidence is not None and not 0.0 <= confidence <= 1.0:
             raise ValueError("Confidence must be between 0.0 and 1.0")
 
+        # Check capacity and prune if needed
+        if self.graph.number_of_nodes() >= self.max_nodes:
+            self._prune_low_value_nodes()
+
         now = datetime.utcnow().isoformat()
 
         self.graph.add_node(
@@ -183,6 +192,35 @@ class WorldModel:
         """
         async with self._db_lock:
             return self.add_node(node_type, text, confidence, provenance, metadata, node_id)
+
+    def _prune_low_value_nodes(self) -> None:
+        """
+        Remove lowest-confidence nodes older than 24h with no connections (degree 0).
+        Called when the graph reaches max_nodes capacity.
+        """
+        cutoff = (datetime.utcnow() - timedelta(hours=24)).isoformat()
+        candidates = []
+
+        for node_id, data in self.graph.nodes(data=True):
+            if self.graph.degree(node_id) > 0:
+                continue
+            created_at = data.get("created_at", "")
+            if created_at and created_at < cutoff:
+                confidence = data.get("confidence") or 0.0
+                candidates.append((node_id, confidence))
+
+        # Sort by confidence ascending (lowest first)
+        candidates.sort(key=lambda x: x[1])
+
+        # Remove up to 10% of max_nodes
+        remove_count = min(len(candidates), max(1, self.max_nodes // 10))
+        removed = [node_id for node_id, _ in candidates[:remove_count]]
+
+        for node_id in removed:
+            self.graph.remove_node(node_id)
+
+        if removed:
+            logger.info(f"Pruned {len(removed)} low-value nodes (capacity: {self.graph.number_of_nodes()}/{self.max_nodes})")
 
     def add_finding(
         self,

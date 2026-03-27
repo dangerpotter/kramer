@@ -15,11 +15,11 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Set
 from uuid import uuid4
 
-import anthropic
-
 from src.world_model.graph import NodeType, WorldModel
 from src.reporting.cycle_report_generator import CycleReportGenerator, CycleReportContent
 from src.reporting.report_generator import ReportGenerator
+from src.utils.llm_client import get_llm_client
+from src.orchestrator.planning_memory import PlanningMemory
 
 # Budget reservation for final report generation
 FINAL_REPORT_BUDGET_RESERVE = 0.25  # Reserve $0.25 for final report
@@ -269,6 +269,12 @@ class Orchestrator:
         # Cycle report tracking
         self.cycle_reports: List[CycleReportContent] = []
 
+        # Sub-objective tracking for crisper progress metrics
+        self.objective_tracker: Optional["ObjectiveTracker"] = None
+
+        # Planning memory for meta-learning across cycles
+        self.planning_memory = PlanningMemory()
+
         # Event callback for real-time progress updates
         self.event_callback: Optional[Callable[[str, str, Dict[str, Any]], None]] = None
 
@@ -346,7 +352,7 @@ class Orchestrator:
         objective: str,
         context: Optional[Dict[str, Any]] = None,
         parent_task_id: Optional[str] = None,
-    ) -> Task:
+    ) -> Optional[Task]:
         """
         Create a new task within a cycle.
 
@@ -358,7 +364,7 @@ class Orchestrator:
             parent_task_id: Parent task ID if this is a subtask
 
         Returns:
-            A new Task object
+            A new Task object, or None if validation fails
         """
         if cycle_id not in self.cycles:
             raise ValueError(f"Cycle {cycle_id} not found")
@@ -373,6 +379,13 @@ class Orchestrator:
         task_context = context or {}
         if task_type == TaskType.GENERATE_HYPOTHESIS and "objective" not in task_context:
             task_context["objective"] = cycle.objective
+
+        # Validate hypothesis_id for TEST_HYPOTHESIS tasks
+        if task_type == TaskType.TEST_HYPOTHESIS and task_context.get("hypothesis_id"):
+            hypothesis_id = str(task_context["hypothesis_id"])
+            if not self.world_model.graph.has_node(hypothesis_id):
+                print(f"  ⚠️  Skipping TEST_HYPOTHESIS: hypothesis_id '{hypothesis_id[:20]}...' not found in world model")
+                return None
 
         # Inject dataset_path for tasks that need it (ANALYZE_DATA, TEST_HYPOTHESIS)
         if self.dataset_path and "dataset_path" not in task_context:
@@ -441,21 +454,25 @@ class Orchestrator:
 
         return cycle
 
-    def _plan_initial_tasks(self, cycle: Cycle) -> List[tuple]:
+    def _plan_initial_tasks(self, cycle: Cycle, branch_id: Optional[str] = None) -> List[tuple]:
         """
         Plan initial tasks for a cycle using Claude API for intelligent planning.
 
         Args:
             cycle: The cycle to plan tasks for
+            branch_id: If provided, filter world model context to this branch
 
         Returns:
             List of tuples (task_type, objective, context)
         """
         # Get world model context
-        world_model_summary = self._get_world_model_summary()
+        world_model_summary = self._get_world_model_summary(branch_id=branch_id)
 
         # Get previous cycle context
         previous_cycle_context = self._get_previous_cycle_summaries()
+
+        # Get planning history for meta-learning
+        planning_history = self.planning_memory.get_planning_context(max_outcomes=3)
 
         # Use specialized planning for synthesis cycles
         if cycle.cycle_type == CycleType.SYNTHESIS:
@@ -467,6 +484,7 @@ class Orchestrator:
 Research Objective: {cycle.objective}
 
 {previous_cycle_context}
+{planning_history}
 
 Current World Model State:
 - Total nodes: {world_model_summary['total_nodes']}
@@ -511,18 +529,24 @@ Return your response as a JSON array of tasks in this format:
 
 IMPORTANT: For TEST_HYPOTHESIS tasks, you MUST use an actual hypothesis ID (UUID) from the "Recent Hypotheses" list above, not the hypothesis text or a number.
 
+CRITICAL: hypothesis_id values must be EXACT UUID strings copied verbatim from the 'Untested Hypotheses' list above. Do NOT use integers, abbreviations, or made-up IDs.
+
 Create 2-4 tasks that would best advance this research objective."""
+
+        # Append unanswered sub-questions for focus if available
+        if self.objective_tracker and self.objective_tracker.get_unanswered_questions():
+            unanswered = self.objective_tracker.get_unanswered_questions()
+            unanswered_text = "\n".join(f"- {q}" for q in unanswered)
+            prompt += f"""
+
+Unanswered research questions (prioritize these):
+{unanswered_text}"""
 
         try:
             # Call Claude API
-            api_key = os.getenv("ANTHROPIC_API_KEY")
-            if not api_key:
-                # Fallback to simple planning if no API key
-                return self._fallback_task_planning(cycle)
+            client = get_llm_client()
 
-            client = anthropic.Anthropic(api_key=api_key)
-
-            response = client.messages.create(
+            response = client.create_message(
                 model=os.getenv("CLAUDE_MODEL"),
                 max_tokens=2000,
                 temperature=0.7,
@@ -689,10 +713,6 @@ Create 2-4 tasks that would best advance this research objective."""
         Returns:
             List of task tuples, or None if planning fails
         """
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            return None
-
         # Format contradictions
         contradictions_text = "None detected"
         if contradictions:
@@ -700,6 +720,9 @@ Create 2-4 tasks that would best advance this research objective."""
                 f"- Finding A: \"{c['finding1_text'][:80]}...\"\n  Finding B: \"{c['finding2_text'][:80]}...\""
                 for c in contradictions[:5]
             ])
+
+        # Get planning history for meta-learning
+        planning_history = self.planning_memory.get_planning_context(max_outcomes=3)
 
         prompt = f"""Plan tasks for a synthesis cycle in this research discovery process.
 
@@ -729,6 +752,7 @@ RECENT FINDINGS:
 {self._format_recent_items(world_model_summary['recent_findings'])}
 
 {previous_cycle_context}
+{planning_history}
 
 AVAILABLE TASK TYPES:
 - SYNTHESIZE_FINDINGS: Consolidate knowledge, identify patterns, draw conclusions
@@ -753,8 +777,8 @@ Return as JSON array:
 
 For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
 
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
+        client = get_llm_client()
+        response = client.create_message(
             model=os.getenv("CLAUDE_MODEL"),
             max_tokens=2000,
             temperature=0.5,
@@ -879,8 +903,14 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
 
         return tasks
 
-    def _get_world_model_summary(self) -> Dict[str, Any]:
-        """Get a summary of the current world model state."""
+    def _get_world_model_summary(self, branch_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get a summary of the current world model state.
+
+        Args:
+            branch_id: If provided, filter to only shared nodes (no branch_id
+                       in metadata) and nodes tagged with this branch_id.
+        """
         summary = {
             "total_nodes": self.world_model.graph.number_of_nodes(),
             "hypothesis_count": 0,
@@ -893,6 +923,12 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
 
         # Count node types and collect recent items
         for node_id, data in self.world_model.graph.nodes(data=True):
+            # Branch filtering: skip nodes tagged with a different branch
+            if branch_id is not None:
+                node_branch = data.get("metadata", {}).get("branch_id")
+                if node_branch is not None and node_branch != branch_id:
+                    continue
+
             node_type = data.get("node_type")
 
             if node_type == "hypothesis":
@@ -1044,8 +1080,26 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
         all_cycles.append(current_cycle)
         cycles_run += 1
 
+        # Decompose objective into sub-questions
+        from src.orchestrator.sub_objectives import ObjectiveTracker
+        self.objective_tracker = ObjectiveTracker(self.world_model)
+        await self.objective_tracker.decompose(objective)
+        print(f"📋 Decomposed objective into {len(self.objective_tracker.sub_objectives)} sub-questions:")
+        for i, so in enumerate(self.objective_tracker.sub_objectives, 1):
+            print(f"   {i}. {so.question}")
+
         # Generate cycle report for initial cycle
         await self._generate_cycle_report(current_cycle, cycles_run)
+
+        # Record planning outcome
+        planning_outcome = await self.planning_memory.record_outcome(
+            cycle=current_cycle,
+            cycle_number=cycles_run,
+            world_model=self.world_model,
+        )
+        if planning_outcome.reflection:
+            print(f"📝 Planning reflection: {planning_outcome.reflection[:150]}")
+        self.total_budget_used += self.planning_memory.total_cost
 
         # Check for synthesis trigger after initial cycle
         if self.auto_synthesize and self._should_trigger_synthesis(cycles_run - 1):
@@ -1112,6 +1166,16 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
 
             # Generate cycle report for follow-up cycle
             await self._generate_cycle_report(follow_up_cycle, cycles_run)
+
+            # Record planning outcome
+            planning_outcome = await self.planning_memory.record_outcome(
+                cycle=follow_up_cycle,
+                cycle_number=cycles_run,
+                world_model=self.world_model,
+            )
+            if planning_outcome.reflection:
+                print(f"📝 Planning reflection: {planning_outcome.reflection[:150]}")
+            self.total_budget_used += self.planning_memory.total_cost
 
             # Check for synthesis trigger after this cycle
             if self.auto_synthesize and self._should_trigger_synthesis(cycles_run - 1):
@@ -1564,6 +1628,48 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
                             include_appendix=True,
                         )
 
+                        # Extract key insights from synthesis and add as findings
+                        try:
+                            report_path = report_result.get("report")
+                            if report_path and Path(report_path).exists():
+                                report_content = Path(report_path).read_text(encoding="utf-8")[:3000]
+                                llm = get_llm_client()
+                                insight_response = llm.create_message(
+                                    model=os.getenv("CLAUDE_MODEL"),
+                                    max_tokens=1000,
+                                    temperature=0.3,
+                                    messages=[{
+                                        "role": "user",
+                                        "content": (
+                                            f"Extract 3-5 key insights from this synthesis report. "
+                                            f"Return a JSON array of strings, each a concise insight.\n\n"
+                                            f"{report_content}"
+                                        ),
+                                    }],
+                                )
+                                insight_text = ""
+                                for block in insight_response.content:
+                                    if hasattr(block, "type") and block.type == "text":
+                                        insight_text += block.text
+                                if "```json" in insight_text:
+                                    s = insight_text.find("```json") + 7
+                                    e = insight_text.find("```", s)
+                                    insight_text = insight_text[s:e].strip()
+                                elif "```" in insight_text:
+                                    s = insight_text.find("```") + 3
+                                    e = insight_text.find("```", s)
+                                    insight_text = insight_text[s:e].strip()
+                                insights = json.loads(insight_text)
+                                for insight in insights[:5]:
+                                    self.world_model.add_finding(
+                                        text=str(insight),
+                                        confidence=0.7,
+                                        metadata={"source": "synthesis"},
+                                    )
+                                print(f"  Added {min(len(insights), 5)} synthesis insights to world model")
+                        except Exception as synth_err:
+                            print(f"  Warning: Could not extract synthesis insights: {synth_err}")
+
                         # Return results
                         result = TaskResult(
                             success=True,
@@ -1670,10 +1776,11 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
         # Get dataset path from original task context if available
         dataset_path = hypothesis_task.context.get("dataset_path")
 
+        remaining_capacity = cycle.max_tasks - len(cycle.tasks)
+
         # Schedule a test task for each new hypothesis
         for hypothesis_id in hypothesis_ids:
-            # Check if we've already hit max tasks for this cycle
-            if len(cycle.tasks) >= cycle.max_tasks:
+            if remaining_capacity <= 0:
                 print(f"Cycle max tasks ({cycle.max_tasks}) reached, skipping remaining hypothesis tests")
                 break
 
@@ -1693,6 +1800,7 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
 
             # Add task to cycle
             cycle.tasks.append(test_task)
+            remaining_capacity -= 1
             print(f"  → Scheduled TEST_HYPOTHESIS task for {hypothesis_id}")
 
         # Note: These tasks will be picked up in the next execution wave
@@ -2009,10 +2117,6 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
             Dictionary with should_synthesize and reasoning
         """
         try:
-            api_key = os.getenv("ANTHROPIC_API_KEY")
-            if not api_key:
-                return {"should_synthesize": False, "reasoning": "No API key"}
-
             # Get context
             summary = self._get_world_model_summary()
             recent_progress = self._check_recent_progress(num_cycles=3)
@@ -2047,8 +2151,8 @@ Should we trigger a synthesis cycle now? Consider:
 Respond with JSON:
 {{"should_synthesize": true/false, "reasoning": "brief explanation (max 50 words)"}}"""
 
-            client = anthropic.Anthropic(api_key=api_key)
-            response = client.messages.create(
+            client = get_llm_client()
+            response = client.create_message(
                 model=os.getenv("CLAUDE_MODEL"),
                 max_tokens=200,
                 temperature=0.3,
@@ -2127,10 +2231,6 @@ Respond with JSON:
         Returns:
             Synthesis objective string, or None if generation fails
         """
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            return None
-
         # Format contradictions for prompt
         contradictions_text = "None detected"
         if contradictions:
@@ -2173,8 +2273,8 @@ Keep it to 1-2 sentences, max 100 words.
 
 Respond with just the objective text, no quotes or formatting."""
 
-        client = anthropic.Anthropic(api_key=api_key)
-        response = client.messages.create(
+        client = get_llm_client()
+        response = client.create_message(
             model=os.getenv("CLAUDE_MODEL"),
             max_tokens=200,
             temperature=0.5,
@@ -2668,22 +2768,12 @@ Respond with JSON in this exact format:
 {{"completion_score": 0.0, "reasoning": "explanation here"}}"""
 
         try:
-            # Call Claude API
-            api_key = os.getenv("ANTHROPIC_API_KEY")
-            if not api_key:
-                print("⚠️  No ANTHROPIC_API_KEY found, skipping LLM assessment")
-                return {
-                    "completion_score": 0.0,
-                    "reasoning": "API key not available",
-                    "error": "No API key"
-                }
+            client = get_llm_client()
 
-            client = anthropic.Anthropic(api_key=api_key)
-
-            response = client.messages.create(
+            response = client.create_message(
                 model=os.getenv("CLAUDE_MODEL"),
                 max_tokens=1000,
-                temperature=0.3,  # Lower temperature for more consistent scoring
+                temperature=0.3,
                 messages=[
                     {"role": "user", "content": prompt}
                 ],
@@ -2816,7 +2906,59 @@ Respond with JSON in this exact format:
 
     def _check_objective_completion(self) -> bool:
         """
-        Check if research objective is complete using combined LLM and heuristic approach.
+        Check if research objective is complete using sub-objective tracking.
+
+        Uses ObjectiveTracker to evaluate which sub-questions have been answered
+        by current findings, providing deterministic progress scoring.
+
+        Falls back to legacy LLM + heuristic approach if no tracker is available.
+
+        Returns:
+            True if objective appears to be complete
+        """
+        if self.objective_tracker is None:
+            # Fallback to old behavior if no tracker
+            return self._check_objective_completion_legacy()
+
+        # Evaluate progress using sub-objectives
+        import asyncio
+        progress = asyncio.get_event_loop().run_until_complete(
+            self.objective_tracker.evaluate_progress()
+        )
+
+        # Track cost
+        self.total_budget_used += progress.get("cost", 0.0)
+
+        # Log progress
+        print(f"\n{'='*60}")
+        print("OBJECTIVE PROGRESS CHECK")
+        print(f"{'='*60}")
+        print(f"  Score: {progress['score']:.1%}")
+        print(f"  Answered: {progress['answered']}/{progress['total']}")
+        print(f"  Partial: {progress['partial']}/{progress['total']}")
+        print(f"  Unanswered: {progress['unanswered']}/{progress['total']}")
+        for so in progress['sub_objectives']:
+            status_icon = {"answered": "✅", "partial": "🔶", "unanswered": "❌"}.get(so['status'], "?")
+            print(f"  {status_icon} {so['question'][:80]}")
+            if so['answer_summary']:
+                print(f"     → {so['answer_summary'][:100]}")
+        print(f"{'='*60}\n")
+
+        # Store for spawn decisions
+        self.last_completion_score = progress['score']
+
+        # Emit event
+        self._emit_event(
+            "progress_update",
+            f"Progress: {progress['answered']}/{progress['total']} sub-objectives answered ({progress['score']:.0%})",
+            progress
+        )
+
+        return self.objective_tracker.is_complete()
+
+    def _check_objective_completion_legacy(self) -> bool:
+        """
+        Legacy: Check if research objective is complete using combined LLM and heuristic approach.
 
         Uses three methods:
         1. LLM-based assessment for semantic understanding
@@ -2915,8 +3057,11 @@ Respond with JSON in this exact format:
         if self.synthesis_interval and (current_cycle_num + 1) % self.synthesis_interval == 0:
             return True
 
-        # Completion-based: Check if objective met
-        if self._check_objective_completion():
+        # Completion-based: Use tracker score if available, else legacy check
+        if self.objective_tracker is not None:
+            if self.objective_tracker.is_complete():
+                return True
+        elif self._check_objective_completion_legacy():
             return True
 
         # Budget-based: 90% of budget used

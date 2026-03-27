@@ -21,8 +21,13 @@ from src.orchestrator.cycle_manager import Task
 from src.world_model.graph import EdgeType, NodeType, WorldModel
 from src.utils.embedding_service import get_embedding_service, EmbeddingService
 
-# Import LiteratureAgent
+# Import LiteratureAgent (prefer multi-source if available)
 from src.kramer.literature_agent import LiteratureAgent
+
+try:
+    from kramer.agents.literature import LiteratureAgent as MultiSourceLiteratureAgent
+except ImportError:
+    MultiSourceLiteratureAgent = None
 
 
 def _tokenize(text: str) -> Set[str]:
@@ -349,8 +354,12 @@ class AgentCoordinator:
             agent_config = AgentConfig(
                 api_key=self.api_key,
                 model=os.getenv("CLAUDE_MODEL"),
-                use_extended_thinking=True,
+                use_extended_thinking=task.context.get("use_extended_thinking", True),
                 max_iterations=task.context.get("max_iterations", 5),
+                max_attempts_per_step=task.context.get("max_attempts_per_step", 3),
+                quality_threshold=task.context.get("quality_threshold", 0.7),
+                step_timeout=task.context.get("step_timeout", 120),
+                use_code_evolution=task.context.get("use_code_evolution", True),
             )
 
             agent = DataAnalysisAgent(
@@ -383,6 +392,8 @@ class AgentCoordinator:
                     "notebook_path": result.get("notebook_path"),
                     "steps": len(result.get("steps", [])),
                     "world_model_updates": result.get("world_model_updates", []),
+                    "final_script": result.get("final_script"),
+                    "script_version": result.get("script_version", 0),
                 },
             )
 
@@ -424,8 +435,22 @@ class AgentCoordinator:
                     error="LiteratureAgent not available",
                 )
 
-            # Create literature agent
-            agent = LiteratureAgent()
+            # Prefer multi-source literature agent if available and configured
+            agent = None
+            if MultiSourceLiteratureAgent is not None:
+                has_keys = any([
+                    os.getenv("SEMANTIC_SCHOLAR_API_KEY"),
+                    os.getenv("CORE_API_KEY"),
+                    os.getenv("NCBI_API_KEY"),
+                ])
+                if has_keys:
+                    try:
+                        agent = MultiSourceLiteratureAgent()
+                    except Exception:
+                        pass  # Fall back to basic agent
+
+            if agent is None:
+                agent = LiteratureAgent()
 
             # Determine search approach
             hypothesis = task.context.get("hypothesis")
@@ -491,20 +516,25 @@ class AgentCoordinator:
                     continue  # Skip duplicate paper
 
                 try:
+                    paper_metadata = {
+                        "url": paper.get("url"),
+                        "relevance_score": paper.get("relevance_score", 0.0),
+                        "source": paper.get("source", "unknown"),
+                        "query": task.objective,
+                        "arxiv_id": paper.get("arxiv_id"),
+                        "semantic_scholar_id": paper.get("paperId"),
+                    }
+                    # Propagate branch_id from task context
+                    if task.context.get("branch_id"):
+                        paper_metadata["branch_id"] = task.context["branch_id"]
+
                     world_model.add_paper(
                         text=paper.get("abstract", paper.get("title", "No abstract available")),
                         title=paper.get("title", "Unknown Title"),
                         authors=paper.get("authors", []),
                         year=paper.get("year"),
                         doi=paper.get("doi"),
-                        metadata={
-                            "url": paper.get("url"),
-                            "relevance_score": paper.get("relevance_score", 0.0),
-                            "source": paper.get("source", "unknown"),
-                            "query": task.objective,
-                            "arxiv_id": paper.get("arxiv_id"),
-                            "semantic_scholar_id": paper.get("paperId"),
-                        }
+                        metadata=paper_metadata,
                     )
                     papers_added += 1
                     # Track the paper ID to avoid adding it again in this batch
@@ -670,7 +700,7 @@ class AgentCoordinator:
                 world_model=world_model,
                 api_key=self.api_key,
                 model=os.getenv("CLAUDE_MODEL"),
-                use_extended_thinking=True,
+                use_extended_thinking=task.context.get("use_extended_thinking", True),
             )
 
             # Run hypothesis test
@@ -696,6 +726,7 @@ class AgentCoordinator:
             self._update_world_model_with_test_results(
                 world_model=world_model,
                 test_result=test_result,
+                branch_id=task.context.get("branch_id"),
             )
 
             # Convert to findings format
@@ -761,6 +792,7 @@ class AgentCoordinator:
         self,
         world_model: WorldModel,
         test_result,
+        branch_id: Optional[str] = None,
     ) -> None:
         """
         Update world model with hypothesis test results.
@@ -768,6 +800,7 @@ class AgentCoordinator:
         Args:
             world_model: World model to update
             test_result: TestResult from HypothesisTesterAgent
+            branch_id: Optional branch ID to tag findings with
         """
         hypothesis_id = test_result.hypothesis_id
 
@@ -811,15 +844,19 @@ class AgentCoordinator:
                     # Calculate novelty score for this finding
                     novelty = calculate_finding_novelty(finding_text, world_model)
 
+                    finding_metadata = {
+                        "source": evidence.get("source"),
+                        "evidence_type": evidence.get("type"),
+                        "from_hypothesis_test": hypothesis_id,
+                        "novelty": novelty,
+                    }
+                    if branch_id:
+                        finding_metadata["branch_id"] = branch_id
+
                     finding_id = world_model.add_finding(
                         text=finding_text,
                         confidence=evidence.get("confidence", 0.5),
-                        metadata={
-                            "source": evidence.get("source"),
-                            "evidence_type": evidence.get("type"),
-                            "from_hypothesis_test": hypothesis_id,
-                            "novelty": novelty,
-                        },
+                        metadata=finding_metadata,
                     )
 
                     # Link evidence to hypothesis

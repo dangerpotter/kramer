@@ -10,10 +10,9 @@ import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
-import anthropic
-
 from src.world_model.graph import EdgeType, NodeType, WorldModel
 from src.utils.cost_tracker import CostTracker
+from src.utils.llm_client import get_llm_client
 
 
 @dataclass
@@ -64,12 +63,7 @@ class HypothesisAgent:
         self.model = model or os.getenv("CLAUDE_MODEL")
         self.max_tokens = max_tokens
 
-        # Get API key from parameter or environment
-        api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY must be provided in constructor or environment")
-
-        self.client = anthropic.Anthropic(api_key=api_key)
+        self.client = get_llm_client()
 
     def generate_hypotheses(
         self,
@@ -119,7 +113,7 @@ class HypothesisAgent:
 
         # Call Claude API
         try:
-            response = self.client.messages.create(
+            response = self.client.create_message(
                 model=self.model,
                 max_tokens=self.max_tokens,
                 temperature=1.0,
@@ -389,7 +383,7 @@ Respond ONLY with the JSON array, no additional text before or after.
 
         return prompt
 
-    def _parse_response(self, response: anthropic.types.Message) -> List[Dict[str, Any]]:
+    def _parse_response(self, response: Any) -> List[Dict[str, Any]]:
         """
         Parse Claude API response to extract hypotheses.
 
@@ -541,7 +535,7 @@ Respond ONLY with the JSON array, no additional text before or after.
 
         return hypothesis_ids
 
-    def _estimate_cost(self, response: anthropic.types.Message) -> float:
+    def _estimate_cost(self, response: Any) -> float:
         """
         Calculate API cost based on token usage using CostTracker.
 

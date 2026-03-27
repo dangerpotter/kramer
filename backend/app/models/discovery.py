@@ -27,6 +27,8 @@ class DiscoveryConfig(BaseModel):
     max_parallel_tasks: int = Field(4, ge=1, le=10, description="Max parallel tasks")
     enable_checkpointing: bool = Field(True, description="Enable automatic checkpointing")
     checkpoint_interval: int = Field(5, ge=1, description="Cycles between checkpoints")
+    use_tree_search: bool = Field(False, description="Use tree search over hypotheses")
+    tree_search_config: Dict[str, Any] = Field(default_factory=dict, description="Tree search configuration overrides")
 
 
 class DiscoveryResponse(BaseModel):
