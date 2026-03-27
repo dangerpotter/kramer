@@ -513,20 +513,25 @@ class AgentCoordinator:
                     continue  # Skip duplicate paper
 
                 try:
+                    paper_metadata = {
+                        "url": paper.get("url"),
+                        "relevance_score": paper.get("relevance_score", 0.0),
+                        "source": paper.get("source", "unknown"),
+                        "query": task.objective,
+                        "arxiv_id": paper.get("arxiv_id"),
+                        "semantic_scholar_id": paper.get("paperId"),
+                    }
+                    # Propagate branch_id from task context
+                    if task.context.get("branch_id"):
+                        paper_metadata["branch_id"] = task.context["branch_id"]
+
                     world_model.add_paper(
                         text=paper.get("abstract", paper.get("title", "No abstract available")),
                         title=paper.get("title", "Unknown Title"),
                         authors=paper.get("authors", []),
                         year=paper.get("year"),
                         doi=paper.get("doi"),
-                        metadata={
-                            "url": paper.get("url"),
-                            "relevance_score": paper.get("relevance_score", 0.0),
-                            "source": paper.get("source", "unknown"),
-                            "query": task.objective,
-                            "arxiv_id": paper.get("arxiv_id"),
-                            "semantic_scholar_id": paper.get("paperId"),
-                        }
+                        metadata=paper_metadata,
                     )
                     papers_added += 1
                     # Track the paper ID to avoid adding it again in this batch
@@ -718,6 +723,7 @@ class AgentCoordinator:
             self._update_world_model_with_test_results(
                 world_model=world_model,
                 test_result=test_result,
+                branch_id=task.context.get("branch_id"),
             )
 
             # Convert to findings format
@@ -783,6 +789,7 @@ class AgentCoordinator:
         self,
         world_model: WorldModel,
         test_result,
+        branch_id: Optional[str] = None,
     ) -> None:
         """
         Update world model with hypothesis test results.
@@ -790,6 +797,7 @@ class AgentCoordinator:
         Args:
             world_model: World model to update
             test_result: TestResult from HypothesisTesterAgent
+            branch_id: Optional branch ID to tag findings with
         """
         hypothesis_id = test_result.hypothesis_id
 
@@ -833,15 +841,19 @@ class AgentCoordinator:
                     # Calculate novelty score for this finding
                     novelty = calculate_finding_novelty(finding_text, world_model)
 
+                    finding_metadata = {
+                        "source": evidence.get("source"),
+                        "evidence_type": evidence.get("type"),
+                        "from_hypothesis_test": hypothesis_id,
+                        "novelty": novelty,
+                    }
+                    if branch_id:
+                        finding_metadata["branch_id"] = branch_id
+
                     finding_id = world_model.add_finding(
                         text=finding_text,
                         confidence=evidence.get("confidence", 0.5),
-                        metadata={
-                            "source": evidence.get("source"),
-                            "evidence_type": evidence.get("type"),
-                            "from_hypothesis_test": hypothesis_id,
-                            "novelty": novelty,
-                        },
+                        metadata=finding_metadata,
                     )
 
                     # Link evidence to hypothesis

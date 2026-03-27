@@ -447,18 +447,19 @@ class Orchestrator:
 
         return cycle
 
-    def _plan_initial_tasks(self, cycle: Cycle) -> List[tuple]:
+    def _plan_initial_tasks(self, cycle: Cycle, branch_id: Optional[str] = None) -> List[tuple]:
         """
         Plan initial tasks for a cycle using Claude API for intelligent planning.
 
         Args:
             cycle: The cycle to plan tasks for
+            branch_id: If provided, filter world model context to this branch
 
         Returns:
             List of tuples (task_type, objective, context)
         """
         # Get world model context
-        world_model_summary = self._get_world_model_summary()
+        world_model_summary = self._get_world_model_summary(branch_id=branch_id)
 
         # Get previous cycle context
         previous_cycle_context = self._get_previous_cycle_summaries()
@@ -878,8 +879,14 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
 
         return tasks
 
-    def _get_world_model_summary(self) -> Dict[str, Any]:
-        """Get a summary of the current world model state."""
+    def _get_world_model_summary(self, branch_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Get a summary of the current world model state.
+
+        Args:
+            branch_id: If provided, filter to only shared nodes (no branch_id
+                       in metadata) and nodes tagged with this branch_id.
+        """
         summary = {
             "total_nodes": self.world_model.graph.number_of_nodes(),
             "hypothesis_count": 0,
@@ -892,6 +899,12 @@ For TEST_HYPOTHESIS tasks, use actual hypothesis IDs from the list above."""
 
         # Count node types and collect recent items
         for node_id, data in self.world_model.graph.nodes(data=True):
+            # Branch filtering: skip nodes tagged with a different branch
+            if branch_id is not None:
+                node_branch = data.get("metadata", {}).get("branch_id")
+                if node_branch is not None and node_branch != branch_id:
+                    continue
+
             node_type = data.get("node_type")
 
             if node_type == "hypothesis":

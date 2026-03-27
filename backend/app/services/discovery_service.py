@@ -79,9 +79,15 @@ class DiscoveryService:
         self.running_tasks[discovery_id] = task
 
     async def _run_discovery(self, discovery_id: str):
-        """Run discovery (internal)."""
+        """Run discovery (internal). Supports tree search mode."""
         try:
-            result = await self.bridge.run_discovery(discovery_id)
+            config = self.discovery_metadata[discovery_id].get("config", {})
+
+            if config.get("use_tree_search"):
+                result = await self._run_tree_search_discovery(discovery_id, config)
+            else:
+                result = await self.bridge.run_discovery(discovery_id)
+
             self.discovery_metadata[discovery_id]["status"] = DiscoveryStatus.COMPLETED
             self.discovery_metadata[discovery_id]["completed_at"] = datetime.utcnow()
             self.discovery_metadata[discovery_id]["result"] = result
@@ -92,6 +98,18 @@ class DiscoveryService:
             self.discovery_metadata[discovery_id]["error"] = str(e)
         finally:
             self.running_tasks.pop(discovery_id, None)
+
+    async def _run_tree_search_discovery(self, discovery_id: str, config: dict) -> dict:
+        """Run discovery using tree search over hypotheses."""
+        from src.orchestrator.tree_search import TreeSearchConfig, TreeSearchOrchestrator
+
+        orchestrator = self.bridge.get_orchestrator(discovery_id)
+        if not orchestrator:
+            raise ValueError(f"Orchestrator not found for discovery {discovery_id}")
+
+        tree_config = TreeSearchConfig(**config.get("tree_search_config", {}))
+        tree_orchestrator = TreeSearchOrchestrator(orchestrator, tree_config)
+        return await tree_orchestrator.run(objective=config.get("objective", ""))
 
     async def stop_discovery(self, discovery_id: str):
         """
