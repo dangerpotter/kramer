@@ -356,6 +356,9 @@ class AgentCoordinator:
                 model=os.getenv("CLAUDE_MODEL"),
                 use_extended_thinking=task.context.get("use_extended_thinking", True),
                 max_iterations=task.context.get("max_iterations", 5),
+                max_attempts_per_step=task.context.get("max_attempts_per_step", 3),
+                quality_threshold=task.context.get("quality_threshold", 0.7),
+                step_timeout=task.context.get("step_timeout", 120),
             )
 
             agent = DataAnalysisAgent(
