@@ -41,7 +41,14 @@ class AnalysisCodebase:
         self.current_script: str = ""
         self.version: int = 0
         self.history: List[CodeVersion] = []
-        self.llm_client = get_llm_client()
+        self._llm_client = None
+
+    @property
+    def llm_client(self):
+        """Lazy-init LLM client (only when actually needed for generation)."""
+        if self._llm_client is None:
+            self._llm_client = get_llm_client()
+        return self._llm_client
 
     def propose_modification(
         self,

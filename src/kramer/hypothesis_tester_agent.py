@@ -907,7 +907,7 @@ Respond ONLY with the JSON array, no additional text.
 
         return " ".join(reasoning_parts)
 
-    def _parse_json_response(self, response: anthropic.types.Message) -> Any:
+    def _parse_json_response(self, response: Any) -> Any:
         """
         Parse Claude API response to extract JSON.
 

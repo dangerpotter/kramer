@@ -50,8 +50,16 @@ class ObjectiveTracker:
         self.world_model = world_model
         self.sub_objectives: List[SubObjective] = []
         self.objective: str = ""
-        self.llm_client = get_llm_client()
+        self._llm_client = None
         self.total_cost: float = 0.0
+
+    @property
+    def llm_client(self):
+        """Lazy-init LLM client."""
+        if self._llm_client is None:
+            from src.utils.llm_client import get_llm_client
+            self._llm_client = get_llm_client()
+        return self._llm_client
 
     async def decompose(self, objective: str, num_questions: int = 5) -> List[SubObjective]:
         """

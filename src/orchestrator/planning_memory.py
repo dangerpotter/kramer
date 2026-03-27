@@ -65,7 +65,16 @@ class PlanningMemory:
     def __init__(self, max_history: int = 10):
         self.outcomes: List[PlanningOutcome] = []
         self.max_history = max_history
-        self.llm_client = get_llm_client()
+        self._llm_client = None
+
+    @property
+    def llm_client(self):
+        """Lazy-init LLM client."""
+        if self._llm_client is None:
+            from src.utils.llm_client import get_llm_client
+            self._llm_client = get_llm_client()
+        return self._llm_client
+
         self.total_cost: float = 0.0
 
     async def record_outcome(

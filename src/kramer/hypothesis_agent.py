@@ -383,7 +383,7 @@ Respond ONLY with the JSON array, no additional text before or after.
 
         return prompt
 
-    def _parse_response(self, response: anthropic.types.Message) -> List[Dict[str, Any]]:
+    def _parse_response(self, response: Any) -> List[Dict[str, Any]]:
         """
         Parse Claude API response to extract hypotheses.
 
@@ -535,7 +535,7 @@ Respond ONLY with the JSON array, no additional text before or after.
 
         return hypothesis_ids
 
-    def _estimate_cost(self, response: anthropic.types.Message) -> float:
+    def _estimate_cost(self, response: Any) -> float:
         """
         Calculate API cost based on token usage using CostTracker.
 
